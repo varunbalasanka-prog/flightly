@@ -1,0 +1,74 @@
+name: skypulse
+description: "SkyPulse - Private Beta Flight Tracker"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # UI
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.2.1
+  shimmer: ^4.0.0
+  cached_network_image: ^3.4.1
+  flutter_svg: ^2.0.16
+
+  # State Management
+  flutter_bloc: ^9.1.0
+  equatable: ^2.0.7
+
+  # Navigation
+  go_router: ^14.8.1
+
+  # Supabase
+  supabase_flutter: ^2.9.0
+
+  # Firebase
+  firebase_core: ^3.13.0
+  firebase_messaging: ^15.2.4
+
+  # Auth
+  google_sign_in: ^6.2.2
+
+  # Maps
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+
+  # Data / Serialization
+  freezed_annotation: ^3.0.0
+  json_annotation: ^4.9.0
+
+  # Utilities
+  intl: ^0.20.2
+  connectivity_plus: ^6.1.4
+  flutter_dotenv: ^5.2.1
+  url_launcher: ^6.3.1
+  share_plus: ^10.1.4
+  uuid: ^4.5.1
+  timeago: ^3.7.1
+  http: ^1.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  # Code Generation
+  build_runner: ^2.4.14
+  freezed: ^3.0.6
+  json_serializable: ^6.9.4
+
+  # Testing
+  bloc_test: ^10.0.0
+  mocktail: ^1.0.4
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - .env
+    - assets/

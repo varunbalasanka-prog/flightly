@@ -53,17 +53,34 @@ serve(async (req) => {
       crypto.getRandomValues(bytes);
       return Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join('');
     };
-    const inviteCode = generateInviteCode();
+    // invite_code is UNIQUE, so a collision surfaced as a 500. Retry a few
+    // times before giving up (32^8 makes this vanishingly unlikely anyway).
+    let inviteCode = '';
+    let inserted = false;
 
-    const { error: shareError } = await supabaseClient
-      .from('flight_shares')
-      .insert({
-        flight_id: flightId,
-        owner_id: user.id,
-        invite_code: inviteCode,
-      });
+    for (let attempt = 0; attempt < 5 && !inserted; attempt++) {
+      inviteCode = generateInviteCode();
+      const { error: shareError } = await supabaseClient
+        .from('flight_shares')
+        .insert({
+          flight_id: flightId,
+          owner_id: user.id,
+          invite_code: inviteCode,
+        });
 
-    if (shareError) throw shareError;
+      if (!shareError) {
+        inserted = true;
+      } else if (shareError.code !== '23505') {
+        throw shareError; // not a uniqueness violation
+      }
+    }
+
+    if (!inserted) {
+      return new Response(JSON.stringify({ error: 'Could not create a share code' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 503,
+      })
+    }
 
     return new Response(JSON.stringify({ inviteCode }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -71,8 +88,9 @@ serve(async (req) => {
     })
 
   } catch (error) {
+    // Log detail server-side; don't hand internals to the client.
     console.error('share-flight error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: 'Could not create a share code' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })

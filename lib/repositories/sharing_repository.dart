@@ -1,6 +1,4 @@
-import 'dart:math';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../models/models.dart';
 
 class SharingRepository {
   final SupabaseClient _supabase;
@@ -11,30 +9,22 @@ class SharingRepository {
     final user = _supabase.auth.currentUser;
     if (user == null) throw Exception('Must be logged in to share flights');
 
-    try {
-      // 1. Try Edge function if available
-      final response = await _supabase.functions.invoke(
-        'share-flight',
-        body: {'flightId': flightId},
-      ).timeout(const Duration(seconds: 3));
+    // Share codes are issued only by the share-flight Edge Function, which
+    // verifies the caller actually owns the flight and uses a CSPRNG. The old
+    // client-side fallback inserted straight into `flight_shares` with a
+    // Random() code and no ownership check, so a user could mint an invite for
+    // a flight belonging to someone else and hand it to a second account.
+    final response = await _supabase.functions.invoke(
+      'share-flight',
+      body: {'flightId': flightId},
+    );
 
-      if (response.status == 200 && response.data != null && response.data['inviteCode'] != null) {
-        return response.data['inviteCode'] as String;
-      }
-    } catch (_) {}
+    final data = response.data as Map<String, dynamic>?;
+    final code = data?['inviteCode'] as String?;
 
-    // 2. Direct database generation fallback
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    final random = Random();
-    final code = List.generate(6, (index) => chars[random.nextInt(chars.length)]).join();
-
-    await _supabase.from('flight_shares').insert({
-      'flight_id': flightId,
-      'owner_id': user.id,
-      'invite_code': code,
-      'status': 'pending',
-    });
-
+    if (response.status != 200 || code == null) {
+      throw Exception(data?['error'] as String? ?? 'Could not create a share code');
+    }
     return code;
   }
 
@@ -44,33 +34,20 @@ class SharingRepository {
 
     final cleanCode = inviteCode.toUpperCase().trim();
 
-    // 1. Try RPC join_shared_flight
-    try {
-      final rpcRes = await _supabase.rpc('join_shared_flight', params: {'code': cleanCode});
-      if (rpcRes != null && rpcRes['success'] == true) {
-        return;
-      }
-    } catch (_) {}
+    // Redeeming is done only through the join_shared_flight RPC, which checks
+    // the code is pending, unclaimed and not the caller's own. The previous
+    // direct-table fallback re-pointed any matching share row at the current
+    // user -- the exact privilege escalation the RLS policies now prevent, so
+    // it would silently fail here anyway.
+    final result = await _supabase.rpc(
+      'join_shared_flight',
+      params: {'code': cleanCode},
+    ) as Map<String, dynamic>?;
 
-    // 2. Direct database query
-    final shareResponse = await _supabase
-        .from('flight_shares')
-        .select()
-        .eq('invite_code', cleanCode)
-        .maybeSingle();
-
-    if (shareResponse == null) {
-      throw Exception('Invalid or expired invite code');
+    if (result?['success'] != true) {
+      throw Exception(
+        result?['error'] as String? ?? 'Invalid or expired invite code',
+      );
     }
-
-    final share = FlightShare.fromJson(shareResponse);
-
-    await _supabase
-        .from('flight_shares')
-        .update({
-          'shared_with_id': user.id,
-          'status': 'accepted',
-        })
-        .eq('id', share.id);
   }
 }

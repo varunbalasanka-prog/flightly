@@ -27,6 +27,10 @@ class AppConfig {
   static const int pollingStartBeforeDepartureHours = 2;
   static const int staleDataThresholdMinutes = 30;
 
+  /// Length of a share invite code. Must match the generator in the
+  /// share-flight Edge Function.
+  static const int inviteCodeLength = 8;
+
   // Beta
   static const int maxBetaUsers = 5;
   static const String appVersion = '0.1.0-beta';

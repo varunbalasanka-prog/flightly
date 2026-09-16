@@ -8,6 +8,7 @@ import 'config/theme.dart';
 import 'config/routes.dart';
 import 'blocs/auth/auth_bloc.dart';
 import 'blocs/flight/flight_bloc.dart';
+import 'blocs/flight_lookup/flight_lookup_bloc.dart';
 import 'blocs/trip/trip_bloc.dart';
 import 'blocs/sharing/sharing_bloc.dart';
 import 'blocs/quota/quota_bloc.dart';
@@ -40,6 +41,11 @@ Future<void> main() async {
 class SkyPulseApp extends StatelessWidget {
   const SkyPulseApp({super.key});
 
+  static FlightRepository get _flightRepository => FlightRepository(
+        supabase: Supabase.instance.client,
+        provider: SupabaseFlightProvider(Supabase.instance.client),
+      );
+
   @override
   Widget build(BuildContext context) {
     return MultiBlocProvider(
@@ -51,18 +57,18 @@ class SkyPulseApp extends StatelessWidget {
         ),
         BlocProvider<FlightBloc>(
           create: (_) => FlightBloc(
-            repository: FlightRepository(
-              supabase: Supabase.instance.client,
-              provider: SupabaseFlightProvider(Supabase.instance.client),
-            ),
-          )..add(FlightLoadRequested()),
+            repository: _flightRepository,
+          )..add(FlightSubscriptionRequested()),
+        ),
+        BlocProvider<FlightLookupBloc>(
+          create: (_) => FlightLookupBloc(repository: _flightRepository),
         ),
         BlocProvider<TripBloc>(
           create: (_) => TripBloc(
             repository: TripRepository(
               supabase: Supabase.instance.client,
             ),
-          )..add(TripLoadRequested()),
+          )..add(TripSubscriptionRequested()),
         ),
         BlocProvider<SharingBloc>(
           create: (_) => SharingBloc(
@@ -81,9 +87,10 @@ class SkyPulseApp extends StatelessWidget {
       ],
       child: BlocBuilder<AuthBloc, AuthBlocState>(
         builder: (context, authState) {
-          final isAuthenticated = authState is AuthAuthenticated;
-
-          final router = AppRouter.router(isAuthenticated: isAuthenticated);
+          // Update the existing router rather than constructing a new one on
+          // every auth emission -- a fresh GoRouter here would discard the
+          // navigation stack and re-use the same navigator GlobalKeys.
+          AppRouter.updateAuth(isAuthenticated: authState is AuthAuthenticated);
 
           return MaterialApp.router(
             title: AppConfig.appName,
@@ -91,7 +98,7 @@ class SkyPulseApp extends StatelessWidget {
             theme: SkyPulseTheme.lightTheme,
             darkTheme: SkyPulseTheme.darkTheme,
             themeMode: ThemeMode.dark, // Default to dark (Stitch design)
-            routerConfig: router,
+            routerConfig: AppRouter.instance,
           );
         },
       ),

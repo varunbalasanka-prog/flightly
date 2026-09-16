@@ -1,5 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
+import '../config/app_config.dart';
 import '../services/aviation_data_service.dart';
 import 'flight_data_provider.dart';
 
@@ -113,65 +114,145 @@ class SupabaseFlightProvider implements FlightDataProvider {
 
   @override
   Future<UsageQuota> getQuotaStatus() async {
+    // Every per-user figure here used to be a hard-coded literal (1 of 10
+    // flights, 1 of 5 monitors) that ignored both the database and
+    // AppConfig, so the quota UI showed the same invented numbers to
+    // everyone regardless of actual usage.
+    final periodStart = _currentPeriodStart();
+
+    var globalUsed = 0;
+    var globalLimit = AppConfig.globalMonthlyRequestLimit;
+    DateTime? resetsAt;
+
     try {
       final res = await _client
           .from('usage_quotas')
           .select()
-          .order('period_start', ascending: false)
-          .limit(1)
+          .eq('period_start', periodStart.toIso8601String())
           .maybeSingle();
 
       if (res != null) {
-        return UsageQuota(
-          globalRequestsUsed: (res['global_requests_used'] as num?)?.toInt() ?? 0,
-          globalRequestsLimit: (res['global_requests_limit'] as num?)?.toInt() ?? 1000,
-          userMonthlyFlightsUsed: 1,
-          userMonthlyFlightsLimit: 10,
-          userActiveMonitoredCount: 1,
-          userActiveMonitoredLimit: 5,
-          quotaResetsAt: DateTime.tryParse(res['period_end'] as String? ?? ''),
-        );
+        globalUsed = (res['global_requests_used'] as num?)?.toInt() ?? 0;
+        globalLimit = (res['global_requests_limit'] as num?)?.toInt() ?? globalLimit;
+        resetsAt = DateTime.tryParse(res['period_end'] as String? ?? '');
       }
-    } catch (_) {}
+    } catch (_) {
+      // Fall through with defaults; the banner treats this as "unknown usage".
+    }
 
-    return const UsageQuota(
-      globalRequestsUsed: 4,
-      globalRequestsLimit: 1000,
-      userMonthlyFlightsUsed: 1,
-      userMonthlyFlightsLimit: 10,
-      userActiveMonitoredCount: 1,
-      userActiveMonitoredLimit: 5,
+    var flightsUsed = 0;
+    var flightsLimit = AppConfig.userMonthlyFlightLimit;
+    var monitoredCount = 0;
+    var monitoredLimit = AppConfig.userActiveMonitoredLimit;
+
+    final user = _client.auth.currentUser;
+    if (user != null) {
+      try {
+        final res = await _client
+            .from('user_quotas')
+            .select()
+            .eq('user_id', user.id)
+            .eq('period_start', periodStart.toIso8601String())
+            .maybeSingle();
+
+        if (res != null) {
+          flightsUsed = (res['monthly_flights_used'] as num?)?.toInt() ?? 0;
+          flightsLimit =
+              (res['monthly_flights_limit'] as num?)?.toInt() ?? flightsLimit;
+          monitoredCount =
+              (res['active_monitored_count'] as num?)?.toInt() ?? 0;
+          monitoredLimit =
+              (res['active_monitored_limit'] as num?)?.toInt() ?? monitoredLimit;
+        }
+      } catch (_) {}
+    }
+
+    return UsageQuota(
+      globalRequestsUsed: globalUsed,
+      globalRequestsLimit: globalLimit,
+      userMonthlyFlightsUsed: flightsUsed,
+      userMonthlyFlightsLimit: flightsLimit,
+      userActiveMonitoredCount: monitoredCount,
+      userActiveMonitoredLimit: monitoredLimit,
+      quotaResetsAt: resetsAt,
     );
+  }
+
+  /// Start of the current UTC month, matching `date_trunc('month', NOW())`
+  /// as used by the quota stored procedures.
+  static DateTime _currentPeriodStart() {
+    final now = DateTime.now().toUtc();
+    return DateTime.utc(now.year, now.month);
   }
 
   @override
   Future<MonitorResult> setupMonitoring(String flightId) async {
+    // This used to upsert straight into `monitored_flights`, which skipped the
+    // monitor-setup Edge Function entirely -- and with it the per-user active
+    // monitor quota. It also reported success when nobody was signed in.
+    final user = _client.auth.currentUser;
+    if (user == null) {
+      return const MonitorResult(
+        success: false,
+        error: 'You must be signed in to monitor a flight',
+      );
+    }
+
     try {
-      final user = _client.auth.currentUser;
-      if (user != null) {
-        await _client.from('monitored_flights').upsert({
-          'flight_id': flightId,
-          'user_id': user.id,
-          'is_active': true,
-        });
+      final response = await _client.functions.invoke(
+        'monitor-setup',
+        body: {'flightId': flightId},
+      );
+
+      final data = response.data as Map<String, dynamic>?;
+      if (response.status == 200 && data?['success'] == true) {
         return const MonitorResult(success: true);
       }
+      return MonitorResult(
+        success: false,
+        error: data?['error'] as String? ?? 'Could not start monitoring',
+      );
     } catch (e) {
-      return MonitorResult(success: false, error: e.toString());
+      return const MonitorResult(
+        success: false,
+        error: 'Could not start monitoring. Please try again.',
+      );
     }
-    return const MonitorResult(success: true);
   }
 
   @override
   Future<void> stopMonitoring(String flightId) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+
     try {
-      final user = _client.auth.currentUser;
-      if (user != null) {
+      final updated = await _client
+          .from('monitored_flights')
+          .update({'is_active': false})
+          .eq('flight_id', flightId)
+          .eq('user_id', user.id)
+          .eq('is_active', true)
+          .select();
+
+      // Release the monitoring slot. Without this the count only ever grew and
+      // users were permanently locked out once they hit the active limit.
+      if (updated.isEmpty) return;
+
+      final periodStart = _currentPeriodStart().toIso8601String();
+      final quota = await _client
+          .from('user_quotas')
+          .select('active_monitored_count')
+          .eq('user_id', user.id)
+          .eq('period_start', periodStart)
+          .maybeSingle();
+
+      final count = (quota?['active_monitored_count'] as num?)?.toInt() ?? 0;
+      if (count > 0) {
         await _client
-            .from('monitored_flights')
-            .update({'is_active': false})
-            .eq('flight_id', flightId)
-            .eq('user_id', user.id);
+            .from('user_quotas')
+            .update({'active_monitored_count': count - 1})
+            .eq('user_id', user.id)
+            .eq('period_start', periodStart);
       }
     } catch (_) {}
   }

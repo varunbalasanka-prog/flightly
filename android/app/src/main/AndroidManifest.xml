@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Flutter only injects INTERNET into the debug/profile manifests, so a
+         release build had no network access at all. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="skypulse"
         android:name="${applicationName}"
@@ -23,6 +26,16 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- Receives the Supabase magic-link / OAuth callback. Without this
+                 filter, emailRedirectTo "com.skypulse.app://login-callback/"
+                 had nothing registered to handle it and sign-in could never
+                 complete on Android. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="com.skypulse.app" android:host="login-callback"/>
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.

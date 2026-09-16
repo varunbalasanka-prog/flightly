@@ -44,18 +44,43 @@ serve(async (req) => {
       })
     }
 
-    // Generate random 6-char alphanumeric code
-    const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    // Math.random() is not a CSPRNG and its base-36 expansion can yield fewer
+    // than 6 characters, so invite codes were both guessable and occasionally
+    // short. Use crypto randomness over an unambiguous alphabet (no O/0/I/1).
+    const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const generateInviteCode = () => {
+      const bytes = new Uint8Array(8); // must match AppConfig.inviteCodeLength
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join('');
+    };
+    // invite_code is UNIQUE, so a collision surfaced as a 500. Retry a few
+    // times before giving up (32^8 makes this vanishingly unlikely anyway).
+    let inviteCode = '';
+    let inserted = false;
 
-    const { error: shareError } = await supabaseClient
-      .from('flight_shares')
-      .insert({
-        flight_id: flightId,
-        owner_id: user.id,
-        invite_code: inviteCode,
-      });
+    for (let attempt = 0; attempt < 5 && !inserted; attempt++) {
+      inviteCode = generateInviteCode();
+      const { error: shareError } = await supabaseClient
+        .from('flight_shares')
+        .insert({
+          flight_id: flightId,
+          owner_id: user.id,
+          invite_code: inviteCode,
+        });
 
-    if (shareError) throw shareError;
+      if (!shareError) {
+        inserted = true;
+      } else if (shareError.code !== '23505') {
+        throw shareError; // not a uniqueness violation
+      }
+    }
+
+    if (!inserted) {
+      return new Response(JSON.stringify({ error: 'Could not create a share code' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 503,
+      })
+    }
 
     return new Response(JSON.stringify({ inviteCode }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -63,8 +88,9 @@ serve(async (req) => {
     })
 
   } catch (error) {
+    // Log detail server-side; don't hand internals to the client.
     console.error('share-flight error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: 'Could not create a share code' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })

@@ -30,6 +30,22 @@ serve(async (req) => {
       })
     }
 
+    // Verify the caller actually owns this flight. Everything below writes with
+    // the service role, which bypasses RLS -- without this check a user could
+    // start monitoring (and consume a slot on) somebody else's flight.
+    const { data: flight, error: flightError } = await supabaseClient
+      .from('flights')
+      .select('user_id')
+      .eq('id', flightId)
+      .single();
+
+    if (flightError || flight?.user_id !== user.id) {
+      return new Response(JSON.stringify({ error: 'Flight not found or not owned by user' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 403,
+      })
+    }
+
     // Use service role for quotas
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -37,9 +53,11 @@ serve(async (req) => {
     )
 
     // Check user quota for monitoring
-    const currentPeriod = new Date();
-    currentPeriod.setDate(1);
-    currentPeriod.setHours(0, 0, 0, 0);
+    // Must be UTC month start to match `date_trunc('month', NOW())` used by the
+    // quota stored procedures; setHours() here used the runtime's local zone
+    // and produced a period_start that never matched an existing row.
+    const now = new Date();
+    const currentPeriod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
     const { data: userQuota, error: quotaError } = await supabaseAdmin
       .from('user_quotas')
@@ -63,13 +81,28 @@ serve(async (req) => {
     }
 
     // Setup monitor
+    // monitored_flights has UNIQUE(flight_id, user_id), so a plain insert threw
+    // a 500 whenever a user re-monitored a flight they had previously stopped.
+    const { data: existing } = await supabaseAdmin
+      .from('monitored_flights')
+      .select('id, is_active')
+      .eq('flight_id', flightId)
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (existing?.is_active) {
+      return new Response(JSON.stringify({ success: true, alreadyActive: true }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      })
+    }
+
     const { error: monitorError } = await supabaseAdmin
       .from('monitored_flights')
-      .insert({
-        flight_id: flightId,
-        user_id: user.id,
-        is_active: true,
-      });
+      .upsert(
+        { flight_id: flightId, user_id: user.id, is_active: true },
+        { onConflict: 'flight_id,user_id' },
+      );
 
     if (monitorError) throw monitorError;
 
@@ -94,7 +127,7 @@ serve(async (req) => {
 
   } catch (error) {
     console.error('monitor-setup error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: 'Could not start monitoring' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })

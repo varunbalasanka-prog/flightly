@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../blocs/flight/flight_bloc.dart';
 import '../../blocs/sharing/sharing_bloc.dart';
+import '../../config/app_config.dart';
 import '../../models/models.dart';
 
 /// Friends & flight sharing screen.
@@ -28,9 +29,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
   void _submitJoinCode() {
     final code = _codeController.text.trim().toUpperCase();
-    if (code.length < 4) {
+    // The length check and the message used to disagree (accepted 4, said 6)
+    // and neither matched the codes the backend issues.
+    if (code.length != AppConfig.inviteCodeLength) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a valid 6-character invite code')),
+        SnackBar(
+          content: Text(
+            'Enter the ${AppConfig.inviteCodeLength}-character invite code',
+          ),
+        ),
       );
       return;
     }
@@ -104,7 +111,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
                               ),
                             ),
                             Text(
-                              'Enter a 6-character invite code',
+                              'Enter a ${AppConfig.inviteCodeLength}-character invite code',
                               style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                             ),
                           ],

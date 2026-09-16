@@ -1,6 +1,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const AVIATIONSTACK_API_URL = 'http://api.aviationstack.com/v1/flights';
+// HTTPS is mandatory here: the access key travels in the query string, so
+// plain http:// exposed the API key to anyone on the network path.
+const AVIATIONSTACK_API_URL = 'https://api.aviationstack.com/v1/flights';
 
 // Get Aviationstack API key from Supabase Vault or environment
 // In a real app, this should be stored securely in Supabase Vault.
@@ -66,10 +68,13 @@ export function normalizeAviationstackData(apiFlight: any): any {
     dep_delay_minutes: apiFlight.departure?.delay,
     arr_delay_minutes: apiFlight.arrival?.delay,
     status: apiFlight.flight_status,
+    // Keys must be snake_case to match Aircraft.fromJson on the client and the
+    // aircraft JSONB column. `icao24` is the transponder address (not a model)
+    // and `iata` is the aircraft type code (not `icao24`) -- both were swapped.
     aircraft: apiFlight.aircraft ? {
       registration: apiFlight.aircraft.registration,
-      icaoCode: apiFlight.aircraft.icao,
-      modelName: apiFlight.aircraft.icao24,
+      icao_code: apiFlight.aircraft.icao24,
+      model_name: apiFlight.aircraft.iata,
     } : null,
   };
 }

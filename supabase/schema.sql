@@ -36,7 +36,7 @@ BEGIN
     updated_at = NOW();
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
@@ -298,8 +298,14 @@ CREATE POLICY "Users can view own flight snapshots" ON public.status_snapshots F
     WHERE shared_with_id = auth.uid() AND status = 'accepted'
   )
 );
+-- Snapshots are written by the poll-flights Edge Function using the service
+-- role key, which bypasses RLS. Clients may only insert snapshots for flights
+-- they own; the previous WITH CHECK (TRUE) let any signed-in user forge a
+-- status (gate change, "cancelled", ...) on ANY user's flight.
 DROP POLICY IF EXISTS "Users can insert snapshots" ON public.status_snapshots;
-CREATE POLICY "Users can insert snapshots" ON public.status_snapshots FOR INSERT WITH CHECK (TRUE);
+CREATE POLICY "Users can insert snapshots" ON public.status_snapshots FOR INSERT WITH CHECK (
+  flight_id IN (SELECT id FROM public.flights WHERE user_id = auth.uid())
+);
 
 ALTER TABLE public.notification_events ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Users can view own notifications" ON public.notification_events;
@@ -308,14 +314,28 @@ DROP POLICY IF EXISTS "Users can insert notifications" ON public.notification_ev
 CREATE POLICY "Users can insert notifications" ON public.notification_events FOR INSERT WITH CHECK (auth.uid() = user_id);
 
 ALTER TABLE public.flight_shares ENABLE ROW LEVEL SECURITY;
+-- `FOR ALL USING (owner_id = auth.uid())` alone let a client insert a share
+-- row naming itself as owner for a flight_id it does not own, then redeem it
+-- from a second account. The WITH CHECK ties the share to real ownership.
 DROP POLICY IF EXISTS "Owners can manage shares" ON public.flight_shares;
-CREATE POLICY "Owners can manage shares" ON public.flight_shares FOR ALL USING (auth.uid() = owner_id);
+CREATE POLICY "Owners can manage shares" ON public.flight_shares FOR ALL
+  USING (auth.uid() = owner_id)
+  WITH CHECK (
+    auth.uid() = owner_id
+    AND flight_id IN (SELECT id FROM public.flights WHERE user_id = auth.uid())
+  );
+-- A recipient may only see shares addressed to them. Previously this policy
+-- OR-ed in `auth.role() = 'authenticated'`, which let ANY signed-in user read
+-- every row in this table -- including every invite_code and invite_email.
 DROP POLICY IF EXISTS "Shared users can view shares" ON public.flight_shares;
 CREATE POLICY "Shared users can view shares" ON public.flight_shares FOR SELECT USING (
-  shared_with_id = auth.uid() OR auth.role() = 'authenticated'
+  shared_with_id = auth.uid()
 );
-DROP POLICY IF EXISTS "Shared users can update shares" ON public.flight_shares;
-CREATE POLICY "Shared users can update shares" ON public.flight_shares FOR UPDATE USING (auth.role() = 'authenticated');
+
+-- Claiming an invite is done exclusively through join_shared_flight(), which is
+-- SECURITY DEFINER. There is deliberately no direct UPDATE policy for
+-- recipients: the previous one allowed any authenticated user to UPDATE any
+-- row, i.e. to point any share at themselves and read someone else's flights.
 
 ALTER TABLE public.usage_quotas ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Authenticated users can view quotas" ON public.usage_quotas;
@@ -343,7 +363,7 @@ BEGIN
   ON CONFLICT (period_start) DO UPDATE
   SET global_requests_used = public.usage_quotas.global_requests_used + 1;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Check quota
 CREATE OR REPLACE FUNCTION public.check_quota()
@@ -363,7 +383,7 @@ BEGIN
 
   RETURN current_used < current_limit;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Join shared flight via invite code
 CREATE OR REPLACE FUNCTION public.join_shared_flight(code TEXT)
@@ -371,13 +391,28 @@ RETURNS JSONB AS $$
 DECLARE
   share_record RECORD;
 BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error', 'You must be signed in');
+  END IF;
+
+  -- Only an unclaimed, non-revoked invite can be redeemed. Without the
+  -- status/shared_with_id guards this would happily re-point an already
+  -- accepted share at the caller, silently revoking the original recipient,
+  -- and would still honour codes the owner had revoked.
   SELECT * INTO share_record
   FROM public.flight_shares
   WHERE invite_code = UPPER(TRIM(code))
+    AND status = 'pending'
+    AND shared_with_id IS NULL
   LIMIT 1;
 
   IF NOT FOUND THEN
     RETURN jsonb_build_object('success', false, 'error', 'Invalid or expired invite code');
+  END IF;
+
+  -- The owner redeeming their own code would grant themselves a duplicate row.
+  IF share_record.owner_id = auth.uid() THEN
+    RETURN jsonb_build_object('success', false, 'error', 'You already own this flight');
   END IF;
 
   UPDATE public.flight_shares
@@ -387,7 +422,26 @@ BEGIN
 
   RETURN jsonb_build_object('success', true, 'flight_id', share_record.flight_id);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- ── Function privileges ──
+-- Postgres grants EXECUTE to PUBLIC by default and anon/authenticated inherit
+-- from it, so every SECURITY DEFINER function here was reachable over
+-- /rest/v1/rpc by anonymous callers. increment_global_quota in particular let
+-- an unauthenticated caller burn the monthly provider quota at will.
+REVOKE EXECUTE ON FUNCTION public.handle_new_user()        FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.increment_global_quota() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.check_quota()            FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.join_shared_flight(TEXT) FROM PUBLIC;
+
+-- Quota helpers are called only by Edge Functions using the service role key.
+GRANT EXECUTE ON FUNCTION public.increment_global_quota() TO service_role;
+GRANT EXECUTE ON FUNCTION public.check_quota()            TO service_role;
+
+-- Redeeming an invite is a signed-in user action.
+GRANT EXECUTE ON FUNCTION public.join_shared_flight(TEXT) TO authenticated;
+
+-- handle_new_user is a trigger function and is intentionally granted to nobody.
 
 -- =============================================
 -- 12. ENABLE REALTIME PUBLICATION

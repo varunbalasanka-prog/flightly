@@ -36,7 +36,7 @@ BEGIN
     updated_at = NOW();
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
@@ -363,7 +363,7 @@ BEGIN
   ON CONFLICT (period_start) DO UPDATE
   SET global_requests_used = public.usage_quotas.global_requests_used + 1;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Check quota
 CREATE OR REPLACE FUNCTION public.check_quota()
@@ -383,7 +383,7 @@ BEGIN
 
   RETURN current_used < current_limit;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- Join shared flight via invite code
 CREATE OR REPLACE FUNCTION public.join_shared_flight(code TEXT)
@@ -422,7 +422,26 @@ BEGIN
 
   RETURN jsonb_build_object('success', true, 'flight_id', share_record.flight_id);
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- ── Function privileges ──
+-- Postgres grants EXECUTE to PUBLIC by default and anon/authenticated inherit
+-- from it, so every SECURITY DEFINER function here was reachable over
+-- /rest/v1/rpc by anonymous callers. increment_global_quota in particular let
+-- an unauthenticated caller burn the monthly provider quota at will.
+REVOKE EXECUTE ON FUNCTION public.handle_new_user()        FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.increment_global_quota() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.check_quota()            FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.join_shared_flight(TEXT) FROM PUBLIC;
+
+-- Quota helpers are called only by Edge Functions using the service role key.
+GRANT EXECUTE ON FUNCTION public.increment_global_quota() TO service_role;
+GRANT EXECUTE ON FUNCTION public.check_quota()            TO service_role;
+
+-- Redeeming an invite is a signed-in user action.
+GRANT EXECUTE ON FUNCTION public.join_shared_flight(TEXT) TO authenticated;
+
+-- handle_new_user is a trigger function and is intentionally granted to nobody.
 
 -- =============================================
 -- 12. ENABLE REALTIME PUBLICATION

@@ -8,11 +8,18 @@ import {
 } from '../_shared/aviationstack.ts'
 
 serve(async (req) => {
-  // This endpoint should be protected, e.g., by checking a secret CRON_KEY
-  const authHeader = req.headers.get('Authorization')
+  // Only the pg_cron job may invoke this. If CRON_SECRET_KEY is not
+  // configured the comparison used to become `Bearer undefined`, which an
+  // attacker could send verbatim to trigger unlimited polling and drain the
+  // provider quota. Fail closed instead.
   const cronKey = Deno.env.get('CRON_SECRET_KEY')
-  
-  if (authHeader !== `Bearer ${cronKey}`) {
+  if (!cronKey) {
+    console.error('CRON_SECRET_KEY is not configured; refusing to run.')
+    return new Response('Unauthorized', { status: 401 })
+  }
+
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader || !timingSafeEqual(authHeader, `Bearer ${cronKey}`)) {
     return new Response('Unauthorized', { status: 401 })
   }
 
@@ -226,4 +233,15 @@ function nextPollDue(lastPolledAt: string | null, flightRow: any): number {
 
   const minutesToDeparture = (departure - now) / 60_000;
   return last + pollIntervalMinutes(minutesToDeparture) * 60_000;
+}
+
+/** Length-independent comparison, so the secret cannot be recovered by timing. */
+function timingSafeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder();
+  const aBytes = encoder.encode(a);
+  const bBytes = encoder.encode(b);
+  if (aBytes.length !== bBytes.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
+  return diff === 0;
 }

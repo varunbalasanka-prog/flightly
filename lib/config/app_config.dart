@@ -15,6 +15,10 @@ class AppConfig {
   static String get googleWebClientId =>
       dotenv.env['GOOGLE_WEB_CLIENT_ID'] ?? '';
 
+  /// Optional. CARTO now requires a key for its raster basemaps; without one
+  /// every tile is watermarked. Leave unset to use keyless OpenStreetMap tiles.
+  static String get cartoApiKey => dotenv.env['CARTO_API_KEY'] ?? '';
+
   /// Aviationstack credentials are NEVER stored in the app.
   /// They live exclusively in Supabase Vault secrets.
   /// The app only calls authenticated Edge Functions.

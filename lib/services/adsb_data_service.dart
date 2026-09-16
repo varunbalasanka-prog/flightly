@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Real, key-free flight data.
 ///
@@ -47,6 +48,18 @@ class AdsbDataService {
   static const _positionTtl = Duration(seconds: 20);
 
   static const _timeout = Duration(seconds: 8);
+
+  /// adsb.lol sends no Access-Control-Allow-Origin header, so a browser blocks
+  /// it. On web we go through the live-position Edge Function instead; native
+  /// builds have no CORS and call the API directly. (adsbdb does send CORS.)
+  static const _useProxyForLive = kIsWeb;
+
+  /// After repeated failures, stop retrying for a while. Without this the map's
+  /// refresh timer hammered a blocked endpoint every 20 seconds indefinitely.
+  static const _failureThreshold = 3;
+  static const _backoff = Duration(minutes: 5);
+  int _liveFailures = 0;
+  DateTime? _liveBackoffUntil;
 
   final _routeCache = <String, _CacheEntry<FlightRoute?>>{};
   final _aircraftCache = <String, _CacheEntry<AircraftRecord?>>{};
@@ -119,7 +132,7 @@ class AdsbDataService {
         continue;
       }
 
-      final body = await _getJson('$_liveBase/callsign/$callsign');
+      final body = await _fetchLive(callsign);
       if (body == null) continue;
 
       final position = LivePosition._tryParseFirst(body);
@@ -127,6 +140,53 @@ class AdsbDataService {
       if (position != null) return position;
     }
     return null;
+  }
+
+  /// Fetches a live fix, honouring the backoff and the web proxy.
+  Future<Map<String, dynamic>?> _fetchLive(String callsign) async {
+    final until = _liveBackoffUntil;
+    if (until != null && DateTime.now().isBefore(until)) return null;
+
+    final body = _useProxyForLive
+        ? await _getJsonViaProxy(callsign)
+        : await _getJson('$_liveBase/callsign/$callsign');
+
+    if (body == null) {
+      if (++_liveFailures >= _failureThreshold) {
+        _liveBackoffUntil = DateTime.now().add(_backoff);
+        _liveFailures = 0;
+        debugPrint(
+          'Live position lookups failing; pausing for ${_backoff.inMinutes}min.',
+        );
+      }
+      return null;
+    }
+
+    _liveFailures = 0;
+    _liveBackoffUntil = null;
+    return body;
+  }
+
+  /// Calls the live-position Edge Function, which adds the CORS headers
+  /// adsb.lol omits and shares one upstream request across clients.
+  Future<Map<String, dynamic>?> _getJsonViaProxy(String callsign) async {
+    try {
+      final response = await Supabase.instance.client.functions
+          .invoke('live-position', body: {'callsign': callsign})
+          .timeout(_timeout);
+
+      if (response.status != 200) return null;
+      final data = response.data;
+      if (data is Map<String, dynamic>) return data;
+      if (data is String) {
+        final decoded = jsonDecode(data);
+        return decoded is Map<String, dynamic> ? decoded : null;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('live-position proxy failed: $e');
+      return null;
+    }
   }
 
   /// Live traffic within [radiusNm] nautical miles of a point.

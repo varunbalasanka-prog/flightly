@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import '../../blocs/flight/flight_bloc.dart';
+import '../../config/map_tiles.dart';
 import '../../models/models.dart';
 import '../../services/adsb_data_service.dart';
 import '../../services/aviation_data_service.dart';
@@ -34,6 +35,10 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   /// ADS-B coverage. Null means we genuinely do not know where it is -- the
   /// marker then falls back to an estimate that is labelled as such.
   LivePosition? _livePosition;
+
+  /// Real airport coordinates for this flight, from adsbdb. The local table
+  /// only holds 19 airports, and routes now resolve worldwide.
+  FlightRoute? _route;
   Timer? _positionTimer;
   String? _trackedCallsign;
 
@@ -68,13 +73,22 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     setState(() => _livePosition = position);
   }
 
+  /// Resolves real airport coordinates once per flight. Cached for 24h by the
+  /// service, so this is a single request per route.
+  Future<void> _resolveRoute(String callsign) async {
+    final route = await AdsbDataService.instance.lookupRoute(callsign);
+    if (!mounted || route == null) return;
+    setState(() => _route = route);
+  }
+
   /// Kicks off a fetch when the screen first learns which flight it is showing.
   void _ensureTracking(String callsign) {
     if (_trackedCallsign == callsign) return;
     _trackedCallsign = callsign;
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _refreshLivePosition(callsign),
-    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _refreshLivePosition(callsign);
+      _resolveRoute(callsign);
+    });
   }
 
   @override
@@ -103,33 +117,25 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           return _buildEmptyState(context, state);
         }
 
-        // Retrieve airport geo coordinates
-        final originRecord = AviationDataService.airports[targetFlight.departureAirportIata] ??
-            const AirportRecord(
-              iata: 'JFK',
-              icao: 'KJFK',
-              name: 'John F. Kennedy Intl',
-              city: 'New York',
-              country: 'USA',
-              lat: 40.6413,
-              lng: -73.7781,
-              timezone: 'America/New_York',
-            );
+        // Airport coordinates, in order of trust: the resolved route, then the
+        // built-in table. These used to fall back to hard-coded JFK and LHR,
+        // so any airport outside the 19-entry table was silently drawn in the
+        // wrong place -- and routes now resolve worldwide (6E204 is HYD-COK,
+        // neither of which that fallback would have handled correctly).
+        _ensureTracking(targetFlight.flightNumber);
 
-        final destRecord = AviationDataService.airports[targetFlight.arrivalAirportIata] ??
-            const AirportRecord(
-              iata: 'LHR',
-              icao: 'EGLL',
-              name: 'Heathrow Airport',
-              city: 'London',
-              country: 'UK',
-              lat: 51.4700,
-              lng: -0.4543,
-              timezone: 'Europe/London',
-            );
+        final originLatLng = _resolveAirport(
+          targetFlight.departureAirportIata,
+          _route?.origin,
+        );
+        final destLatLng = _resolveAirport(
+          targetFlight.arrivalAirportIata,
+          _route?.destination,
+        );
 
-        final originLatLng = LatLng(originRecord.lat, originRecord.lng);
-        final destLatLng = LatLng(destRecord.lat, destRecord.lng);
+        if (originLatLng == null || destLatLng == null) {
+          return _buildUnmappableState(context, targetFlight);
+        }
 
         // Calculate great-circle arc coordinates
         final rawCoords = AviationDataService.instance.calculateGreatCircleCoordinates(
@@ -140,9 +146,6 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           points: 40,
         );
         final polylinePoints = rawCoords.map((c) => LatLng(c[0], c[1])).toList();
-
-        // Start (or retarget) the live position poll for this flight.
-        _ensureTracking(targetFlight.flightNumber);
 
         // Prefer the aircraft's actual broadcast position. Only when there is
         // no transponder fix do we fall back to interpolating along the route,
@@ -225,14 +228,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 ),
                 children: [
                   // CartoDB Dark Matter / Positron Tiles
-                  TileLayer(
-                    urlTemplate: isDark
-                        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-                        : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-                    subdomains: const ['a', 'b', 'c', 'd'],
-                    userAgentPackageName: 'com.skypulse.app',
-                  ),
-
+                  MapTiles.layer(isDark: isDark),
                   // Route Polyline Layer
                   PolylineLayer(
                     polylines: [
@@ -308,13 +304,8 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                     ],
                   ),
                   // Required by the OpenStreetMap and CARTO basemap terms.
-                  RichAttributionWidget(
-                    attributions: [
-                      TextSourceAttribution('OpenStreetMap contributors'),
-                      TextSourceAttribution('CARTO'),
-                    ],
-                  ),
-                ],
+                  MapTiles.attribution(),
+                  ],
               ),
 
               // ── Floating Telemetry HUD Card ──
@@ -333,6 +324,51 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           ),
         );
       },
+    );
+  }
+
+  /// Real coordinates for an airport, or null when we simply do not know.
+  LatLng? _resolveAirport(String iata, RouteAirport? fromRoute) {
+    if (fromRoute != null && fromRoute.iataCode == iata) {
+      return LatLng(fromRoute.latitude, fromRoute.longitude);
+    }
+    final record = AviationDataService.airports[iata];
+    if (record != null) return LatLng(record.lat, record.lng);
+    return null;
+  }
+
+  Widget _buildUnmappableState(BuildContext context, Flight flight) {
+    final cs = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: Text('${flight.flightNumber} · Live Radar')),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.public_off, size: 56, color: cs.onSurfaceVariant),
+              const SizedBox(height: 16),
+              Text(
+                'Route map unavailable',
+                style: GoogleFonts.inter(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurface,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                "We don't have coordinates for "
+                '${flight.departureAirportIata} or '
+                '${flight.arrivalAirportIata} yet.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

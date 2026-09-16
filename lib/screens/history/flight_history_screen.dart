@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../blocs/flight/flight_bloc.dart';
+import '../../config/map_tiles.dart';
 import '../../models/models.dart';
 import '../../services/aviation_data_service.dart';
 
@@ -116,24 +117,13 @@ class _FlightHistoryScreenState extends State<FlightHistoryScreen> {
                           InteractionOptions(flags: InteractiveFlag.none),
                     ),
                     children: [
-                      TileLayer(
-                        urlTemplate: isDark
-                            ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-                            : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
-                        subdomains: const ['a', 'b', 'c', 'd'],
-                        userAgentPackageName: 'com.skypulse.skypulse',
-                      ),
-                      PolylineLayer(
+                      MapTiles.layer(isDark: isDark),
+                  PolylineLayer(
                         polylines: _routeLines(flights, cs.secondary),
                       ),
                       // Required by the OpenStreetMap and CARTO basemap terms.
-                      const RichAttributionWidget(
-                        attributions: [
-                          TextSourceAttribution('OpenStreetMap contributors'),
-                          TextSourceAttribution('CARTO'),
-                        ],
-                      ),
-                    ],
+                      MapTiles.attribution(),
+                  ],
                   ),
                 ),
               ),

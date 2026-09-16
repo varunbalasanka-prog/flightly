@@ -7,6 +7,7 @@ import '../../blocs/flight/flight_bloc.dart';
 import '../../blocs/sharing/sharing_bloc.dart';
 import '../../config/theme.dart';
 import '../../models/models.dart';
+import '../../utils/delay_risk_calculator.dart';
 
 /// Flight detail screen — the core screen of SkyPulse.
 /// Displays live flight status, gate changes, delay analysis, aircraft specs,
@@ -692,24 +693,21 @@ class _DelayRiskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final delay = flight.departureDelayMinutes ?? 0;
-    final String riskLevel;
-    final Color riskColor;
-    final String description;
+    // This was an inline `delay > 30` branch presented as "Predictive Delay
+    // Risk", with copy about airspace and ground flow that nothing here
+    // measured. DelayRiskCalculator was already written and unit-tested but
+    // had no caller; it applies explicit rules and returns the factors behind
+    // its verdict, so the card can show its working.
+    final risk = const DelayRiskCalculator().calculate(flight: flight);
 
-    if (delay > 30 || flight.status == FlightStatusEnum.cancelled) {
-      riskLevel = 'High';
-      riskColor = Colors.redAccent;
-      description = 'Significant delay detected along this flight route or origin hub.';
-    } else if (delay > 0) {
-      riskLevel = 'Moderate';
-      riskColor = Colors.amber;
-      description = 'Minor delay ($delay min) expected due to airspace or ground flow.';
-    } else {
-      riskLevel = 'Low';
-      riskColor = Colors.green;
-      description = 'Flight operations on schedule. No disruption predicted.';
-    }
+    final riskLevel = risk.level.displayName;
+    final riskColor = switch (risk.level) {
+      DelayRiskLevel.high => Colors.redAccent,
+      DelayRiskLevel.medium => Colors.amber,
+      DelayRiskLevel.low => Colors.green,
+      DelayRiskLevel.unknown => cs.onSurfaceVariant,
+    };
+    final description = risk.explanation;
 
     return Card(
       elevation: 0,
@@ -729,7 +727,8 @@ class _DelayRiskCard extends StatelessWidget {
                 Icon(Icons.analytics_outlined, size: 18, color: cs.secondary),
                 const SizedBox(width: 8),
                 Text(
-                  'Predictive Delay Risk',
+                  // Nothing here predicts; it applies stated rules.
+                  'Delay Risk',
                   style: GoogleFonts.inter(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
@@ -762,6 +761,41 @@ class _DelayRiskCard extends StatelessWidget {
                 color: cs.onSurfaceVariant,
               ),
             ),
+            // Show every rule that fired, so the verdict is auditable rather
+            // than a bare label.
+            if (risk.factors.length > 1) ...[
+              const SizedBox(height: 10),
+              ...risk.factors.skip(1).map(
+                    (factor) => Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 5, right: 8),
+                            child: Container(
+                              width: 4,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: cs.onSurfaceVariant,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              factor,
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                color: cs.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+            ],
           ],
         ),
       ),

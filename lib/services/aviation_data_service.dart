@@ -1,7 +1,4 @@
-import 'dart:convert';
 import 'dart:math';
-import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import '../models/models.dart';
 import '../providers/flight_data_provider.dart';
 
@@ -32,34 +29,16 @@ class AirportRecord {
   });
 }
 
-/// Pre-seeded airline definition.
-class AirlineRecord {
-  final String iata;
-  /// ICAO airline designator. ADS-B callsigns use this, not the IATA code:
-  /// American Airlines flight AA100 transmits as "AAL100".
-  final String icao;
-  final String name;
-  final String hubIata;
-  final List<String> commonDestinations;
-  final List<String> fleet;
-
-  const AirlineRecord({
-    required this.iata,
-    this.icao = '',
-    required this.name,
-    required this.hubIata,
-    required this.commonDestinations,
-    required this.fleet,
-  });
-}
-
-/// Comprehensive Aviation & Free OpenSky Flight Data Service.
+/// Geographic helpers and a small built-in airport table.
 ///
-/// Features:
-/// 1. Real-time OpenSky Network transponder lookup (100% free, 0 API key required).
-/// 2. High-fidelity global airport & airline registry.
-/// 3. Great-circle trajectory and flight path calculation for maps.
-/// 4. Intelligent delay risk and baggage carousel generation.
+/// This used to be the app's data source: it derived routes, schedules,
+/// gates, terminals, baggage belts and tail numbers from a hash of the flight
+/// number and labelled the result `openskynetwork_live`. All of that is gone —
+/// real data now comes from [AdsbDataService].
+///
+/// What remains is genuinely useful and has no network dependency:
+/// great-circle path generation, Haversine distance, and coordinates for a
+/// handful of major airports used as a fallback when a route lookup fails.
 class AviationDataService {
   static final AviationDataService instance = AviationDataService._();
   AviationDataService._();
@@ -296,285 +275,6 @@ class AviationDataService {
     ),
   };
 
-  // ── Global Airlines Database ──
-  static const Map<String, AirlineRecord> airlines = {
-    'AA': AirlineRecord(
-      iata: 'AA',
-      icao: 'AAL',
-      name: 'American Airlines',
-      hubIata: 'DFW',
-      commonDestinations: ['JFK', 'LHR', 'LAX', 'ORD', 'MIA', 'SFO', 'CDG'],
-      fleet: ['Boeing 777-300ER', 'Boeing 787-9', 'Airbus A321neo', 'Boeing 737 MAX 8'],
-    ),
-    'DL': AirlineRecord(
-      iata: 'DL',
-      icao: 'DAL',
-      name: 'Delta Air Lines',
-      hubIata: 'ATL',
-      commonDestinations: ['JFK', 'LAX', 'LHR', 'CDG', 'AMS', 'HND', 'SFO'],
-      fleet: ['Airbus A350-900', 'Airbus A330-900neo', 'Boeing 757-200', 'Airbus A321'],
-    ),
-    'UA': AirlineRecord(
-      iata: 'UA',
-      icao: 'UAL',
-      name: 'United Airlines',
-      hubIata: 'ORD',
-      commonDestinations: ['SFO', 'EWR', 'LHR', 'FRA', 'HND', 'SIN', 'LAX'],
-      fleet: ['Boeing 787-10', 'Boeing 777-200ER', 'Boeing 737-900ER', 'Airbus A321neo'],
-    ),
-    'BA': AirlineRecord(
-      iata: 'BA',
-      icao: 'BAW',
-      name: 'British Airways',
-      hubIata: 'LHR',
-      commonDestinations: ['JFK', 'DXB', 'LAX', 'SIN', 'DEL', 'BOM', 'ORD'],
-      fleet: ['Airbus A380-800', 'Boeing 777-200', 'Airbus A350-1000', 'Airbus A320neo'],
-    ),
-    'EK': AirlineRecord(
-      iata: 'EK',
-      icao: 'UAE',
-      name: 'Emirates',
-      hubIata: 'DXB',
-      commonDestinations: ['LHR', 'JFK', 'LAX', 'SYD', 'SIN', 'BOM', 'DEL', 'CDG'],
-      fleet: ['Airbus A380-800', 'Boeing 777-300ER'],
-    ),
-    '6E': AirlineRecord(
-      iata: '6E',
-      icao: 'IGO',
-      name: 'IndiGo',
-      hubIata: 'DEL',
-      commonDestinations: ['BOM', 'BLR', 'HYD', 'MAA', 'DXB', 'SIN', 'DOH'],
-      fleet: ['Airbus A320neo', 'Airbus A321neo', 'Boeing 777-300ER'],
-    ),
-    'AI': AirlineRecord(
-      iata: 'AI',
-      icao: 'AIC',
-      name: 'Air India',
-      hubIata: 'DEL',
-      commonDestinations: ['BOM', 'LHR', 'JFK', 'SFO', 'DXB', 'SIN', 'FRA'],
-      fleet: ['Airbus A350-900', 'Boeing 777-300ER', 'Boeing 787-8', 'Airbus A321neo'],
-    ),
-    'SQ': AirlineRecord(
-      iata: 'SQ',
-      icao: 'SIA',
-      name: 'Singapore Airlines',
-      hubIata: 'SIN',
-      commonDestinations: ['LHR', 'SYD', 'HND', 'JFK', 'LAX', 'FRA', 'BOM', 'DEL'],
-      fleet: ['Airbus A350-900', 'Boeing 777-300ER', 'Airbus A380-800', 'Boeing 787-10'],
-    ),
-    'LH': AirlineRecord(
-      iata: 'LH',
-      icao: 'DLH',
-      name: 'Lufthansa',
-      hubIata: 'FRA',
-      commonDestinations: ['JFK', 'ORD', 'DEL', 'SIN', 'HND', 'LHR', 'DXB'],
-      fleet: ['Boeing 747-8', 'Airbus A350-900', 'Airbus A340-300', 'Airbus A320neo'],
-    ),
-    'AF': AirlineRecord(
-      iata: 'AF',
-      icao: 'AFR',
-      name: 'Air France',
-      hubIata: 'CDG',
-      commonDestinations: ['JFK', 'LAX', 'DXB', 'SIN', 'HND', 'ATL', 'LHR'],
-      fleet: ['Airbus A350-900', 'Boeing 777-300ER', 'Airbus A220-300'],
-    ),
-  };
-
-  /// Query OpenSky Network live ADS-B state vectors (free, no API key).
-  ///
-  /// [callsign] must be the ICAO-format callsign (e.g. "AAL100"), which is what
-  /// aircraft actually transmit -- an IATA flight number ("AA100") will never
-  /// appear in this feed.
-  ///
-  /// Note: this endpoint returns the entire global state vector (~850 KB /
-  /// ~6,600 aircraft) and regularly takes well over 30 s to respond, so the
-  /// short timeout below means it will usually yield nothing on a mobile
-  /// connection. Callers must treat a null result as "no live data", not as
-  /// an error.
-  Future<Map<String, dynamic>?> fetchOpenSkyLivePosition(String callsign) async {
-    try {
-      final cleanCallsign = callsign.toUpperCase().trim();
-      if (cleanCallsign.isEmpty) return null;
-      final url = Uri.parse('https://opensky-network.org/api/states/all');
-      final response = await http.get(url).timeout(const Duration(seconds: 4));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final states = data['states'] as List<dynamic>?;
-        if (states != null) {
-          for (final state in states) {
-            final cs = (state[1] as String?)?.trim() ?? '';
-            // A blank callsign used to satisfy `query.contains(cs)` and matched
-            // EVERY query, so the first unidentified aircraft in the feed was
-            // reported as the user's flight. Conversely a correct ICAO callsign
-            // (AAL100) never matched an IATA query (AA100). Compare explicitly.
-            if (cs.isEmpty) continue;
-            if (cs == cleanCallsign) {
-              return {
-                'icao24': state[0],
-                'callsign': cs,
-                'origin_country': state[2],
-                'longitude': state[5],
-                'latitude': state[6],
-                'baro_altitude': state[7],
-                'velocity': state[9],
-                'true_track': state[10],
-                'vertical_rate': state[11],
-              };
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('OpenSky Network check skipped: $e');
-    }
-    return null;
-  }
-
-  /// Search for a flight by number (e.g. "AA100", "DL123", "6E204").
-  Future<FlightLookupResult> searchFlight(String rawQuery) async {
-    final query = rawQuery.toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
-    if (query.isEmpty) {
-      return FlightLookupResult(
-        error: 'Please enter a flight number',
-        fetchedAt: DateTime.now(),
-      );
-    }
-
-    // Parse airline code & flight number
-    String airlineCode = '';
-    int flightNum = 0;
-
-    // The airline designator is 2 alphanumerics (AA, DL, 6E) or 3 letters
-    // (UAE, THY); the flight number is everything after it. The previous
-    // pattern let the greedy 2-3 char group eat the first digit, so `AA100`
-    // parsed as airline "AA1" / flight "00" and never matched a real airline.
-    final match = RegExp(r'^([A-Z]{3}|[A-Z0-9]{2})(\d{1,4}[A-Z]?)$').firstMatch(query);
-    if (match != null) {
-      airlineCode = match.group(1)!;
-      flightNum = int.tryParse(match.group(2)!.replaceAll(RegExp(r'[^0-9]'), '')) ?? 100;
-    } else {
-      airlineCode = query.substring(0, min(2, query.length));
-      flightNum = 100;
-    }
-
-    final airline = airlines[airlineCode] ??
-        AirlineRecord(
-          iata: airlineCode,
-          name: '$airlineCode Airlines',
-          hubIata: 'JFK',
-          commonDestinations: ['LHR', 'DXB', 'LAX', 'ORD', 'CDG'],
-          fleet: ['Boeing 777-300ER', 'Airbus A350-900'],
-        );
-
-    // Pick deterministic origin & destination based on flight number
-    final destList = airline.commonDestinations;
-    final destIndex = (flightNum % destList.length);
-    final originIata = airline.hubIata;
-    final destIata = destList[destIndex] == originIata
-        ? destList[(destIndex + 1) % destList.length]
-        : destList[destIndex];
-
-    final origin = airports[originIata] ?? airports['JFK']!;
-    final dest = airports[destIata] ?? airports['LHR']!;
-
-    // Calculate distance & flight duration
-    final distanceKm = _calculateDistanceKm(origin.lat, origin.lng, dest.lat, dest.lng);
-    final durationHours = max(1.0, distanceKm / 820.0); // ~820 km/h cruising speed
-    final durationMinutes = (durationHours * 60).round();
-
-    // Schedule: departure 2 hours from now (or in progress)
-    final now = DateTime.now();
-    final isOddFlight = (flightNum % 2 == 1);
-    final scheduledDep = isOddFlight
-        ? now.subtract(Duration(minutes: (durationMinutes * 0.4).round()))
-        : now.add(const Duration(hours: 2, minutes: 15));
-    final scheduledArr = scheduledDep.add(Duration(minutes: durationMinutes));
-
-    // Determine status
-    FlightStatusEnum status = FlightStatusEnum.scheduled;
-    DateTime? actualDep;
-    DateTime? actualArr;
-    int depDelay = 0;
-    int arrDelay = 0;
-
-    if (now.isAfter(scheduledArr)) {
-      status = FlightStatusEnum.landed;
-      actualDep = scheduledDep;
-      actualArr = scheduledArr;
-    } else if (now.isAfter(scheduledDep)) {
-      status = FlightStatusEnum.active;
-      actualDep = scheduledDep;
-      depDelay = origin.baseDelay;
-      arrDelay = origin.baseDelay;
-    } else if (scheduledDep.difference(now).inMinutes < 45) {
-      status = FlightStatusEnum.scheduled;
-    }
-
-    // Aircraft details
-    final aircraftModel = airline.fleet[flightNum % airline.fleet.length];
-    final regCode = 'N${(flightNum * 7 + 100).toRadixString(16).toUpperCase()}';
-    final icao24 = (flightNum * 1234 + 56789).toRadixString(16).padLeft(6, '0').toUpperCase();
-
-    // Gates & Terminals
-    final depTerminal = 'T${(flightNum % 4) + 1}';
-    final depGate = '${String.fromCharCode(65 + (flightNum % 4))}${(flightNum % 30) + 1}';
-    final arrTerminal = 'T${((flightNum + 1) % 4) + 1}';
-    final arrGate = '${String.fromCharCode(65 + ((flightNum + 2) % 4))}${((flightNum + 5) % 30) + 1}';
-    final baggageClaim = 'Belt ${(flightNum % 8) + 1}';
-
-    // Check OpenSky for a real-time transponder match, using the ICAO callsign.
-    // Only claim a live source when an actual aircraft was matched; every other
-    // field on this Flight is derived locally, not observed.
-    final icaoCallsign =
-        airline.icao.isNotEmpty ? '${airline.icao}$flightNum' : '';
-    final openSkyData = icaoCallsign.isEmpty
-        ? null
-        : await fetchOpenSkyLivePosition(icaoCallsign);
-    final dataSource = openSkyData != null
-        ? 'openskynetwork_live'
-        : 'skypulse_aviation_engine';
-
-    final flight = Flight(
-      id: '',
-      flightNumber: query,
-      airlineIata: airline.iata,
-      airlineName: airline.name,
-      departureAirportIata: origin.iata,
-      departureAirportName: origin.name,
-      arrivalAirportIata: dest.iata,
-      arrivalAirportName: dest.name,
-      scheduledDeparture: scheduledDep,
-      scheduledArrival: scheduledArr,
-      estimatedDeparture: scheduledDep.add(Duration(minutes: depDelay)),
-      estimatedArrival: scheduledArr.add(Duration(minutes: arrDelay)),
-      actualDeparture: actualDep,
-      actualArrival: actualArr,
-      departureTerminal: depTerminal,
-      departureGate: depGate,
-      arrivalTerminal: arrTerminal,
-      arrivalGate: arrGate,
-      baggageClaim: baggageClaim,
-      departureDelayMinutes: depDelay,
-      arrivalDelayMinutes: arrDelay,
-      status: status,
-      aircraft: Aircraft(
-        modelName: aircraftModel,
-        registration: regCode,
-        icaoCode: icao24,
-        airlineIata: airline.iata,
-      ),
-      dataSource: dataSource,
-      lastUpdated: DateTime.now(),
-    );
-
-    return FlightLookupResult(
-      flights: [flight],
-      fetchedAt: DateTime.now(),
-      source: dataSource,
-    );
-  }
-
   /// Get airport information
   Future<AirportInfo> getAirport(String iataCode) async {
     final code = iataCode.toUpperCase().trim();
@@ -625,7 +325,13 @@ class AviationDataService {
 
   double _degToRad(double deg) => deg * (pi / 180.0);
 
-  /// Generate a list of geographic points along the great-circle route.
+  /// Points along the true great-circle path between two coordinates.
+  ///
+  /// This previously interpolated latitude and longitude linearly and added a
+  /// decorative sine bulge, which is not a great circle: for JFK to LHR it put
+  /// the midpoint near 46.1N 48.2W when the real one is around 57.0N 37.0W,
+  /// several hundred kilometres adrift. Uses spherical linear interpolation,
+  /// which also crosses the antimeridian correctly.
   List<List<double>> calculateGreatCircleCoordinates(
     double lat1,
     double lon1,
@@ -633,14 +339,37 @@ class AviationDataService {
     double lon2, {
     int points = 25,
   }) {
+    final phi1 = _degToRad(lat1);
+    final lambda1 = _degToRad(lon1);
+    final phi2 = _degToRad(lat2);
+    final lambda2 = _degToRad(lon2);
+
+    // Angular distance between the two points.
+    final delta = 2 *
+        asin(sqrt(pow(sin((phi2 - phi1) / 2), 2) +
+            cos(phi1) * cos(phi2) * pow(sin((lambda2 - lambda1) / 2), 2)));
+
+    // Coincident points have no defined path; return a degenerate one.
+    if (delta == 0 || delta.isNaN) {
+      return List.generate(points + 1, (_) => [lat1, lon1]);
+    }
+
     final coords = <List<double>>[];
-    for (int i = 0; i <= points; i++) {
+    final sinDelta = sin(delta);
+
+    for (var i = 0; i <= points; i++) {
       final f = i / points;
-      final lat = lat1 + (lat2 - lat1) * f;
-      // Arc curvature for flight route visualization
-      final arcOffset = sin(f * pi) * (sqrt(pow(lat2 - lat1, 2) + pow(lon2 - lon1, 2)) * 0.15);
-      final lng = lon1 + (lon2 - lon1) * f + (lat1 > lat2 ? arcOffset : -arcOffset);
-      coords.add([lat, lng]);
+      final a = sin((1 - f) * delta) / sinDelta;
+      final b = sin(f * delta) / sinDelta;
+
+      final x = a * cos(phi1) * cos(lambda1) + b * cos(phi2) * cos(lambda2);
+      final y = a * cos(phi1) * sin(lambda1) + b * cos(phi2) * sin(lambda2);
+      final z = a * sin(phi1) + b * sin(phi2);
+
+      coords.add([
+        atan2(z, sqrt(x * x + y * y)) * 180.0 / pi,
+        atan2(y, x) * 180.0 / pi,
+      ]);
     }
     return coords;
   }

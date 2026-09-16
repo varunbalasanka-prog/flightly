@@ -56,19 +56,29 @@ class ConnectionCalculator {
           '${outboundFlight.departureAirportIata} — comfortable';
     }
 
-    // Adjust if inbound is delayed
-    if (inboundFlight.isDelayed && status == ConnectionStatusEnum.safe) {
+    // Adjust if inbound is delayed.
+    //
+    // Only when the delay is NOT already reflected in the arrival time.
+    // `bestArrivalTime` prefers actual/estimated arrival, which an airline
+    // reports with the delay baked in -- subtracting `arrivalDelayMinutes`
+    // again counted it twice and turned a comfortable 60min connection into
+    // "effective connection 30min / At Risk".
+    final delayAlreadyInArrivalTime = inboundFlight.actualArrival != null ||
+        inboundFlight.estimatedArrival != null;
+
+    if (inboundFlight.isDelayed &&
+        !delayAlreadyInArrivalTime &&
+        status == ConnectionStatusEnum.safe) {
       final delay = inboundFlight.arrivalDelayMinutes ?? 0;
-      if (connectionMinutes - delay < tightThresholdMinutes) {
+      final effective = connectionMinutes - delay;
+      if (effective < tightThresholdMinutes) {
         status = ConnectionStatusEnum.atRisk;
         explanation =
-            'Inbound delayed ${delay}min — effective connection '
-            '${connectionMinutes - delay}min';
-      } else if (connectionMinutes - delay < minimumConnectionMinutes) {
+            'Inbound delayed ${delay}min — effective connection ${effective}min';
+      } else if (effective < minimumConnectionMinutes) {
         status = ConnectionStatusEnum.tight;
         explanation =
-            'Inbound delayed ${delay}min — connection now '
-            '${connectionMinutes - delay}min';
+            'Inbound delayed ${delay}min — connection now ${effective}min';
       }
     }
 

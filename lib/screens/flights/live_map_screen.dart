@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -7,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import '../../blocs/flight/flight_bloc.dart';
 import '../../models/models.dart';
+import '../../services/adsb_data_service.dart';
 import '../../services/aviation_data_service.dart';
 
 /// Live flight map with high-precision great-circle paths, real-time aircraft positioning,
@@ -28,16 +30,51 @@ class LiveMapScreen extends StatefulWidget {
 class _LiveMapScreenState extends State<LiveMapScreen> {
   late final MapController _mapController;
 
+  /// The aircraft's actual broadcast position, when it is airborne and within
+  /// ADS-B coverage. Null means we genuinely do not know where it is -- the
+  /// marker then falls back to an estimate that is labelled as such.
+  LivePosition? _livePosition;
+  Timer? _positionTimer;
+  String? _trackedCallsign;
+
   @override
   void initState() {
     super.initState();
     _mapController = MapController();
+    // ADS-B fixes arrive every few seconds; refreshing every 20s is responsive
+    // without hammering a free service.
+    _positionTimer = Timer.periodic(
+      const Duration(seconds: 20),
+      (_) => _refreshLivePosition(),
+    );
   }
 
   @override
   void dispose() {
+    _positionTimer?.cancel();
     _mapController.dispose();
     super.dispose();
+  }
+
+  /// Fetches the current transponder fix for [callsign], once per callsign
+  /// change and then on the refresh timer.
+  Future<void> _refreshLivePosition([String? callsign]) async {
+    final target = callsign ?? _trackedCallsign;
+    if (target == null || target.isEmpty) return;
+    _trackedCallsign = target;
+
+    final position = await AdsbDataService.instance.lookupLivePosition(target);
+    if (!mounted) return;
+    setState(() => _livePosition = position);
+  }
+
+  /// Kicks off a fetch when the screen first learns which flight it is showing.
+  void _ensureTracking(String callsign) {
+    if (_trackedCallsign == callsign) return;
+    _trackedCallsign = callsign;
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _refreshLivePosition(callsign),
+    );
   }
 
   @override
@@ -104,13 +141,21 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         );
         final polylinePoints = rawCoords.map((c) => LatLng(c[0], c[1])).toList();
 
-        // Compute plane progress (0.0 -> 1.0)
+        // Start (or retarget) the live position poll for this flight.
+        _ensureTracking(targetFlight.flightNumber);
+
+        // Prefer the aircraft's actual broadcast position. Only when there is
+        // no transponder fix do we fall back to interpolating along the route,
+        // and the HUD says so rather than presenting the estimate as live.
+        final live = _livePosition;
+        final hasLiveFix = live != null && !live.onGround;
+
         final now = DateTime.now();
         final depTime = targetFlight.actualDeparture ?? targetFlight.scheduledDeparture;
         final arrTime = targetFlight.actualArrival ?? targetFlight.scheduledArrival;
         final totalDuration = arrTime.difference(depTime).inSeconds;
 
-        double progress = 0.45; // Default aesthetic mid-flight position
+        double progress = 0.45;
         if (totalDuration > 0) {
           final elapsed = now.difference(depTime).inSeconds;
           progress = (elapsed / totalDuration).clamp(0.05, 0.95);
@@ -118,16 +163,22 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           if (targetFlight.status == FlightStatusEnum.landed) progress = 1.0;
         }
 
-        // Interpolate aircraft coordinate along the arc
         final index = (progress * (polylinePoints.length - 1)).floor();
         final nextIndex = min(index + 1, polylinePoints.length - 1);
-        final planeLatLng = polylinePoints[index];
+        final estimatedLatLng = polylinePoints[index];
         final nextLatLng = polylinePoints[nextIndex];
 
-        // Heading in radians/degrees
-        final dLat = nextLatLng.latitude - planeLatLng.latitude;
-        final dLng = nextLatLng.longitude - planeLatLng.longitude;
-        final headingRad = atan2(dLng, dLat);
+        final planeLatLng = hasLiveFix
+            ? LatLng(live.latitude, live.longitude)
+            : estimatedLatLng;
+
+        // The aircraft broadcasts its own track; only derive one when it does not.
+        final headingRad = hasLiveFix && live.headingDegrees != null
+            ? live.headingDegrees! * pi / 180.0
+            : atan2(
+                nextLatLng.longitude - estimatedLatLng.longitude,
+                nextLatLng.latitude - estimatedLatLng.latitude,
+              );
 
         final center = LatLng(
           (originLatLng.latitude + destLatLng.latitude) / 2,
@@ -274,6 +325,7 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                 child: _FlightHudCard(
                   flight: targetFlight,
                   progress: progress,
+                  live: hasLiveFix ? live : null,
                   cs: cs,
                 ),
               ),
@@ -377,14 +429,28 @@ class _AirportMarker extends StatelessWidget {
   }
 }
 
+String _thousands(int value) {
+  final digits = value.abs().toString();
+  final buffer = StringBuffer(value < 0 ? '-' : '');
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) buffer.write(',');
+    buffer.write(digits[i]);
+  }
+  return buffer.toString();
+}
+
 class _FlightHudCard extends StatelessWidget {
   final Flight flight;
   final double progress;
+
+  /// The aircraft's broadcast fix, or null when nothing is being received.
+  final LivePosition? live;
   final ColorScheme cs;
 
   const _FlightHudCard({
     required this.flight,
     required this.progress,
+    required this.live,
     required this.cs,
   });
 
@@ -475,11 +541,14 @@ class _FlightHudCard extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Route Completion: $pct%',
+                  live != null
+                      ? 'Route Completion: $pct%'
+                      : 'Estimated progress: $pct%',
                   style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
                 ),
                 Text(
-                  flight.aircraft?.modelName ?? 'Commercial Jet',
+                  // Was 'Commercial Jet' whenever the type was unknown.
+                  flight.aircraft?.modelName ?? live?.aircraftType ?? '—',
                   style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
                 ),
               ],
@@ -489,19 +558,27 @@ class _FlightHudCard extends StatelessWidget {
             // Telemetry Grid
             Row(
               children: [
+                // These were fixed strings -- every active flight reported
+                // "36,000 FT" and "485 KTS". They now show what the aircraft
+                // actually broadcast, or an em dash when nothing is being
+                // received.
                 _TelemetryStat(
                   label: 'ALTITUDE',
-                  value: flight.status == FlightStatusEnum.active ? '36,000 FT' : 'GROUND',
+                  value: live?.altitudeFeet != null
+                      ? '${_thousands(live!.altitudeFeet!.round())} FT'
+                      : '—',
                   cs: cs,
                 ),
                 _TelemetryStat(
                   label: 'GROUND SPEED',
-                  value: flight.status == FlightStatusEnum.active ? '485 KTS' : '0 KTS',
+                  value: live?.groundSpeedKnots != null
+                      ? '${live!.groundSpeedKnots!.round()} KTS'
+                      : '—',
                   cs: cs,
                 ),
                 _TelemetryStat(
-                  label: 'RADAR FEED',
-                  value: flight.dataSource?.contains('OpenSky') == true ? 'OPENSKY' : 'LIVE ADS-B',
+                  label: 'POSITION',
+                  value: live != null ? 'LIVE ADS-B' : 'ESTIMATED',
                   cs: cs,
                 ),
               ],

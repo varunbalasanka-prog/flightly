@@ -258,6 +258,35 @@ class _FlightSearchScreenState extends State<FlightSearchScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ADS-B tells us the route and whether the aircraft is flying;
+              // it carries no timetable, gates or baggage belts. Say so rather
+              // than leaving the blanks unexplained.
+              if (!flight.scheduleIsKnown) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  margin: const EdgeInsets.only(bottom: 14),
+                  decoration: BoxDecoration(
+                    color: cs.secondaryContainer.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, size: 16, color: cs.onSurfaceVariant),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Route confirmed from live ADS-B. Departure times and '
+                          'gates are not published by this source — add your own '
+                          'times after tracking.',
+                          style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
               // Airline & Status row
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -339,17 +368,30 @@ class _FlightSearchScreenState extends State<FlightSearchScreen> {
                           style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                         ),
                         const SizedBox(height: 6),
-                        Text(
-                          timeFmt.format(flight.scheduledDeparture),
-                          style: GoogleFonts.inter(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
+                        // ADS-B sources give the route but no timetable, so
+                        // showing the placeholder here would read as if the
+                        // airline had published these times.
+                        if (flight.scheduleIsKnown) ...[
+                          Text(
+                            timeFmt.format(flight.scheduledDeparture),
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-                        ),
-                        Text(
-                          dateFmt.format(flight.scheduledDeparture),
-                          style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                        ),
+                          Text(
+                            dateFmt.format(flight.scheduledDeparture),
+                            style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                          ),
+                        ] else
+                          Text(
+                            '--:--',
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: cs.onSurfaceVariant,
+                            ),
+                          ),
                         if (flight.departureGate != null)
                           Text('Gate ${flight.departureGate}',
                               style: TextStyle(fontSize: 12, color: cs.primary)),
@@ -383,17 +425,27 @@ class _FlightSearchScreenState extends State<FlightSearchScreen> {
                           style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                         ),
                         const SizedBox(height: 6),
-                        Text(
-                          timeFmt.format(flight.scheduledArrival),
-                          style: GoogleFonts.inter(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
+                        if (flight.scheduleIsKnown) ...[
+                          Text(
+                            timeFmt.format(flight.scheduledArrival),
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-                        ),
-                        Text(
-                          dateFmt.format(flight.scheduledArrival),
-                          style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                        ),
+                          Text(
+                            dateFmt.format(flight.scheduledArrival),
+                            style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                          ),
+                        ] else
+                          Text(
+                            '--:--',
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: cs.onSurfaceVariant,
+                            ),
+                          ),
                         if (flight.arrivalGate != null)
                           Text('Gate ${flight.arrivalGate}',
                               style: TextStyle(fontSize: 12, color: cs.primary)),

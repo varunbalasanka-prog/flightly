@@ -1,6 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 import '../config/app_config.dart';
+import '../services/adsb_data_service.dart';
 import '../services/aviation_data_service.dart';
 import 'flight_data_provider.dart';
 
@@ -49,8 +50,85 @@ class SupabaseFlightProvider implements FlightDataProvider {
       // Fallback seamlessly to free & zero-key OpenSky + Aviation Engine
     }
 
-    // 2. Query free OpenSky + Aviation Data Engine
-    return AviationDataService.instance.searchFlight(cleanNum);
+    // 2. Real, key-free ADS-B data. This used to call the local "aviation
+    // engine", which invented the route, schedule, gate, terminal, baggage
+    // belt and tail number from a hash of the flight number.
+    return _lookupViaAdsb(cleanNum);
+  }
+
+  /// Builds a [Flight] from adsbdb (route + airframe) and adsb.lol (live fix).
+  ///
+  /// Fields these sources do not carry -- scheduled times, gates, terminals,
+  /// baggage belts, delay minutes -- are deliberately left null.
+  Future<FlightLookupResult> _lookupViaAdsb(String flightNumber) async {
+    final adsb = AdsbDataService.instance;
+
+    final route = await adsb.lookupRoute(flightNumber);
+    if (route == null) {
+      return FlightLookupResult(
+        error: 'No route found for $flightNumber. '
+            'Check the flight number, or add the flight manually.',
+        fetchedAt: DateTime.now(),
+      );
+    }
+
+    final live = await adsb.lookupLivePosition(
+      flightNumber,
+      icaoCallsign: route.callsignIcao,
+    );
+
+    // Registration and type usually ride along with the live fix; fall back to
+    // the airframe registry when the aircraft is not currently airborne.
+    Aircraft? aircraft;
+    if (live != null) {
+      final registry = await adsb.lookupAircraft(live.modeSHex);
+      aircraft = Aircraft(
+        registration: live.registration?.isNotEmpty == true
+            ? live.registration
+            : registry?.registration,
+        icaoCode: live.modeSHex,
+        modelName: registry?.type.isNotEmpty == true
+            ? registry!.type
+            : live.aircraftType,
+        airlineIata: route.airlineIata,
+      );
+    }
+
+    // We know it is flying only if a transponder says so. Anything else is
+    // genuinely unknown to these sources.
+    final status = live == null
+        ? FlightStatusEnum.unknown
+        : (live.onGround ? FlightStatusEnum.scheduled : FlightStatusEnum.active);
+
+    // Placeholder window, flagged via scheduleIsKnown so the UI can ask the
+    // user for real times rather than presenting these as airline data.
+    final now = DateTime.now();
+
+    final flight = Flight(
+      id: '',
+      flightNumber: route.callsignIata.isNotEmpty
+          ? route.callsignIata
+          : flightNumber,
+      airlineIata: route.airlineIata,
+      airlineName: route.airlineName.isNotEmpty ? route.airlineName : null,
+      departureAirportIata: route.origin.iataCode,
+      departureAirportName: route.origin.name,
+      arrivalAirportIata: route.destination.iataCode,
+      arrivalAirportName: route.destination.name,
+      scheduledDeparture: now,
+      scheduledArrival: now,
+      scheduleIsKnown: false,
+      status: status,
+      aircraft: aircraft,
+      dataSource: live != null ? 'adsb.lol + adsbdb' : 'adsbdb',
+      lastUpdated: DateTime.now(),
+    );
+
+    return FlightLookupResult(
+      flights: [flight],
+      fetchedAt: DateTime.now(),
+      source: flight.dataSource!,
+    );
   }
 
   @override

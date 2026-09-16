@@ -36,6 +36,14 @@ class Flight extends Equatable {
   final DateTime? lastUpdated;
   final String? dataSource;
 
+  /// False when the provider gave a real route but no timetable.
+  ///
+  /// ADS-B sources map a callsign to a city pair, not to scheduled times, so
+  /// the schedule fields hold a placeholder the user is asked to confirm. The
+  /// UI must not present those times as if they came from an airline. Not
+  /// persisted: rows in the database always carry a real schedule.
+  final bool scheduleIsKnown;
+
   const Flight({
     required this.id,
     required this.flightNumber,
@@ -65,6 +73,7 @@ class Flight extends Equatable {
     this.isHistory = false,
     this.lastUpdated,
     this.dataSource,
+    this.scheduleIsKnown = true,
   });
 
   /// The best-known departure time (actual > estimated > scheduled).
@@ -117,6 +126,7 @@ class Flight extends Equatable {
     bool? isHistory,
     DateTime? lastUpdated,
     String? dataSource,
+    bool? scheduleIsKnown,
   }) {
     return Flight(
       id: id ?? this.id,
@@ -147,6 +157,7 @@ class Flight extends Equatable {
       isHistory: isHistory ?? this.isHistory,
       lastUpdated: lastUpdated ?? this.lastUpdated,
       dataSource: dataSource ?? this.dataSource,
+      scheduleIsKnown: scheduleIsKnown ?? this.scheduleIsKnown,
     );
   }
 
@@ -234,7 +245,8 @@ class Flight extends Equatable {
   }
 
   @override
-  List<Object?> get props => [id, flightNumber, status, lastUpdated];
+  List<Object?> get props =>
+      [id, flightNumber, status, lastUpdated, scheduleIsKnown];
 }
 
 /// Aircraft information associated with a flight.

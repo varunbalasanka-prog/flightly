@@ -30,6 +30,22 @@ serve(async (req) => {
       })
     }
 
+    // Verify the caller actually owns this flight. Everything below writes with
+    // the service role, which bypasses RLS -- without this check a user could
+    // start monitoring (and consume a slot on) somebody else's flight.
+    const { data: flight, error: flightError } = await supabaseClient
+      .from('flights')
+      .select('user_id')
+      .eq('id', flightId)
+      .single();
+
+    if (flightError || flight?.user_id !== user.id) {
+      return new Response(JSON.stringify({ error: 'Flight not found or not owned by user' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 403,
+      })
+    }
+
     // Use service role for quotas
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',

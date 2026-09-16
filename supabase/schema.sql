@@ -464,3 +464,86 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.flight_shares;
   EXCEPTION WHEN duplicate_object THEN END;
 END $$;
+
+-- =============================================
+-- 13. WORLD VIEW CACHE (shared global snapshots)
+-- =============================================
+-- Expensive worldwide datasets (every aircraft, every public camera, satellite
+-- element sets) are refreshed by one caller at a time and served to everyone
+-- from a public Storage bucket. Service role only: no client policies.
+CREATE TABLE IF NOT EXISTS public.world_cache_meta (
+  key TEXT PRIMARY KEY,
+  fetched_at TIMESTAMPTZ,
+  item_count INT,
+  source TEXT,
+  refreshing_until TIMESTAMPTZ
+);
+ALTER TABLE public.world_cache_meta ENABLE ROW LEVEL SECURITY;
+
+-- Atomically claims a refresh so concurrent requests don't all hit upstream.
+CREATE OR REPLACE FUNCTION public.claim_world_cache_refresh(cache_key TEXT, hold_seconds INT)
+RETURNS BOOLEAN AS $$
+DECLARE
+  claimed BOOLEAN;
+BEGIN
+  INSERT INTO public.world_cache_meta (key) VALUES (cache_key) ON CONFLICT (key) DO NOTHING;
+  UPDATE public.world_cache_meta
+     SET refreshing_until = NOW() + make_interval(secs => hold_seconds)
+   WHERE key = cache_key
+     AND (refreshing_until IS NULL OR refreshing_until < NOW())
+  RETURNING TRUE INTO claimed;
+  RETURN COALESCE(claimed, FALSE);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION public.claim_world_cache_refresh(TEXT, INT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.claim_world_cache_refresh(TEXT, INT) TO service_role;
+
+-- Public-read bucket for the snapshots. Everything in it is already public data
+-- (ADS-B broadcasts, published camera catalogs, orbital elements). Only the
+-- service role can write: there are no insert/update policies for clients.
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('world-cache', 'world-cache', TRUE)
+ON CONFLICT (id) DO NOTHING;
+
+-- =============================================
+-- 14. DESTINATION + TRACKING EXTRAS
+-- =============================================
+-- The radio station a traveller picked for their destination.
+ALTER TABLE public.flights ADD COLUMN IF NOT EXISTS destination_radio JSONB;
+-- Tail number of the aircraft operating (or flying in to operate) this flight,
+-- entered by the traveller, for "where's my plane".
+ALTER TABLE public.flights ADD COLUMN IF NOT EXISTS aircraft_registration TEXT;
+
+-- Real flown path, captured while adsb.lol still holds it (~24h), so the
+-- flight can be replayed later.
+CREATE TABLE IF NOT EXISTS public.flight_tracks (
+  flight_id UUID PRIMARY KEY REFERENCES public.flights(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  points JSONB NOT NULL,
+  source TEXT DEFAULT 'adsb.lol',
+  captured_at TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE public.flight_tracks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own tracks" ON public.flight_tracks;
+CREATE POLICY "Users can manage own tracks" ON public.flight_tracks FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (
+    auth.uid() = user_id
+    AND flight_id IN (SELECT id FROM public.flights WHERE user_id = auth.uid())
+  );
+
+-- Per-user daily spend for the flight assistant, enforced server-side.
+CREATE TABLE IF NOT EXISTS public.assistant_usage (
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  day DATE NOT NULL DEFAULT CURRENT_DATE,
+  requests INT NOT NULL DEFAULT 0,
+  input_tokens INT NOT NULL DEFAULT 0,
+  output_tokens INT NOT NULL DEFAULT 0,
+  cost_usd NUMERIC(10, 5) NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day)
+);
+ALTER TABLE public.assistant_usage ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can view own assistant usage" ON public.assistant_usage;
+CREATE POLICY "Users can view own assistant usage" ON public.assistant_usage FOR SELECT
+  USING (auth.uid() = user_id);

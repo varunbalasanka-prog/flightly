@@ -59,7 +59,12 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
           );
         }
 
-        targetFlight ??= _fallbackFlight();
+        // Previously this fell back to a hard-coded "AA 100 JFK->LHR" flight
+        // labelled `dataSource: 'OpenSky Network ADS-B'`, so a user with no
+        // flights saw an invented aircraft presented as live radar.
+        if (targetFlight == null) {
+          return _buildEmptyState(context, state);
+        }
 
         // Retrieve airport geo coordinates
         final originRecord = AviationDataService.airports[targetFlight.departureAirportIata] ??
@@ -251,6 +256,13 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       ),
                     ],
                   ),
+                  // Required by the OpenStreetMap and CARTO basemap terms.
+                  RichAttributionWidget(
+                    attributions: [
+                      TextSourceAttribution('OpenStreetMap contributors'),
+                      TextSourceAttribution('CARTO'),
+                    ],
+                  ),
                 ],
               ),
 
@@ -272,30 +284,49 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     );
   }
 
-  Flight _fallbackFlight() => Flight(
-    id: 'demo-live-flight',
-    flightNumber: 'AA 100',
-    airlineIata: 'AA',
-    airlineName: 'American Airlines',
-    departureAirportIata: 'JFK',
-    departureAirportName: 'New York JFK',
-    arrivalAirportIata: 'LHR',
-    arrivalAirportName: 'London Heathrow',
-    scheduledDeparture: DateTime.now().subtract(const Duration(hours: 3)),
-    scheduledArrival: DateTime.now().add(const Duration(hours: 4)),
-    status: FlightStatusEnum.active,
-    departureTerminal: '8',
-    departureGate: '12',
-    arrivalTerminal: '3',
-    arrivalGate: '42',
-    aircraft: const Aircraft(
-      registration: 'N77014',
-      modelName: 'Boeing 777-300ER',
-      icaoCode: 'B77W',
-    ),
-    dataSource: 'OpenSky Network ADS-B',
-    lastUpdated: DateTime.now(),
-  );
+  Widget _buildEmptyState(BuildContext context, FlightState state) {
+    final cs = Theme.of(context).colorScheme;
+    final isLoading = state is FlightLoadInProgress;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Live Radar')),
+      body: Center(
+        child: isLoading
+            ? const CircularProgressIndicator()
+            : Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.radar_rounded,
+                        size: 56, color: cs.onSurfaceVariant),
+                    const SizedBox(height: 16),
+                    Text(
+                      'No flight to track yet',
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: cs.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Add a flight and it will show up here once it is airborne.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: cs.onSurfaceVariant, fontSize: 14),
+                    ),
+                    const SizedBox(height: 24),
+                    FilledButton.icon(
+                      onPressed: () => context.go('/flight/search'),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add a flight'),
+                    ),
+                  ],
+                ),
+              ),
+      ),
+    );
+  }
 }
 
 class _AirportMarker extends StatelessWidget {

@@ -24,15 +24,34 @@ class AppRouter {
   static final _rootNavigatorKey = GlobalKey<NavigatorState>();
   static final _shellNavigatorKey = GlobalKey<NavigatorState>();
 
+  /// Mutable auth flag read by the redirect. The router itself is built once
+  /// (see [instance]); rebuilding it per auth change threw away all navigation
+  /// state and re-registered the same navigator GlobalKeys.
+  static bool _isAuthenticated = false;
+  static GoRouter? _instance;
+
+  /// The single router for the app's lifetime.
+  static GoRouter get instance => _instance ??= router(
+        isAuthenticated: _isAuthenticated,
+      );
+
+  /// Updates the auth flag and re-runs the redirect on the live router.
+  static void updateAuth({required bool isAuthenticated}) {
+    if (_isAuthenticated == isAuthenticated) return;
+    _isAuthenticated = isAuthenticated;
+    _instance?.refresh();
+  }
+
   static GoRouter router({required bool isAuthenticated}) {
+    _isAuthenticated = isAuthenticated;
     return GoRouter(
       navigatorKey: _rootNavigatorKey,
       initialLocation: '/',
       redirect: (context, state) {
         final loggingIn = state.matchedLocation == '/login';
 
-        if (!isAuthenticated && !loggingIn) return '/login';
-        if (isAuthenticated && loggingIn) return '/';
+        if (!_isAuthenticated && !loggingIn) return '/login';
+        if (_isAuthenticated && loggingIn) return '/';
 
         return null;
       },

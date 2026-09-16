@@ -44,8 +44,16 @@ serve(async (req) => {
       })
     }
 
-    // Generate random 6-char alphanumeric code
-    const inviteCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    // Math.random() is not a CSPRNG and its base-36 expansion can yield fewer
+    // than 6 characters, so invite codes were both guessable and occasionally
+    // short. Use crypto randomness over an unambiguous alphabet (no O/0/I/1).
+    const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const generateInviteCode = () => {
+      const bytes = new Uint8Array(8); // must match AppConfig.inviteCodeLength
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join('');
+    };
+    const inviteCode = generateInviteCode();
 
     const { error: shareError } = await supabaseClient
       .from('flight_shares')

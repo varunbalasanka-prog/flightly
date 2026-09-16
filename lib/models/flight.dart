@@ -152,7 +152,9 @@ class Flight extends Equatable {
 
   factory Flight.fromJson(Map<String, dynamic> json) {
     return Flight(
-      id: json['id'] as String,
+      // Lookup results from the provider have no id until they are saved,
+      // so this must not be a non-null cast.
+      id: json['id'] as String? ?? '',
       flightNumber: json['flight_number'] as String,
       airlineIata: json['airline_iata'] as String? ?? '',
       airlineName: json['airline_name'] as String?,

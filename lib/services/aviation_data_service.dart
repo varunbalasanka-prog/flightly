@@ -35,6 +35,9 @@ class AirportRecord {
 /// Pre-seeded airline definition.
 class AirlineRecord {
   final String iata;
+  /// ICAO airline designator. ADS-B callsigns use this, not the IATA code:
+  /// American Airlines flight AA100 transmits as "AAL100".
+  final String icao;
   final String name;
   final String hubIata;
   final List<String> commonDestinations;
@@ -42,6 +45,7 @@ class AirlineRecord {
 
   const AirlineRecord({
     required this.iata,
+    this.icao = '',
     required this.name,
     required this.hubIata,
     required this.commonDestinations,
@@ -296,6 +300,7 @@ class AviationDataService {
   static const Map<String, AirlineRecord> airlines = {
     'AA': AirlineRecord(
       iata: 'AA',
+      icao: 'AAL',
       name: 'American Airlines',
       hubIata: 'DFW',
       commonDestinations: ['JFK', 'LHR', 'LAX', 'ORD', 'MIA', 'SFO', 'CDG'],
@@ -303,6 +308,7 @@ class AviationDataService {
     ),
     'DL': AirlineRecord(
       iata: 'DL',
+      icao: 'DAL',
       name: 'Delta Air Lines',
       hubIata: 'ATL',
       commonDestinations: ['JFK', 'LAX', 'LHR', 'CDG', 'AMS', 'HND', 'SFO'],
@@ -310,6 +316,7 @@ class AviationDataService {
     ),
     'UA': AirlineRecord(
       iata: 'UA',
+      icao: 'UAL',
       name: 'United Airlines',
       hubIata: 'ORD',
       commonDestinations: ['SFO', 'EWR', 'LHR', 'FRA', 'HND', 'SIN', 'LAX'],
@@ -317,6 +324,7 @@ class AviationDataService {
     ),
     'BA': AirlineRecord(
       iata: 'BA',
+      icao: 'BAW',
       name: 'British Airways',
       hubIata: 'LHR',
       commonDestinations: ['JFK', 'DXB', 'LAX', 'SIN', 'DEL', 'BOM', 'ORD'],
@@ -324,6 +332,7 @@ class AviationDataService {
     ),
     'EK': AirlineRecord(
       iata: 'EK',
+      icao: 'UAE',
       name: 'Emirates',
       hubIata: 'DXB',
       commonDestinations: ['LHR', 'JFK', 'LAX', 'SYD', 'SIN', 'BOM', 'DEL', 'CDG'],
@@ -331,6 +340,7 @@ class AviationDataService {
     ),
     '6E': AirlineRecord(
       iata: '6E',
+      icao: 'IGO',
       name: 'IndiGo',
       hubIata: 'DEL',
       commonDestinations: ['BOM', 'BLR', 'HYD', 'MAA', 'DXB', 'SIN', 'DOH'],
@@ -338,6 +348,7 @@ class AviationDataService {
     ),
     'AI': AirlineRecord(
       iata: 'AI',
+      icao: 'AIC',
       name: 'Air India',
       hubIata: 'DEL',
       commonDestinations: ['BOM', 'LHR', 'JFK', 'SFO', 'DXB', 'SIN', 'FRA'],
@@ -345,6 +356,7 @@ class AviationDataService {
     ),
     'SQ': AirlineRecord(
       iata: 'SQ',
+      icao: 'SIA',
       name: 'Singapore Airlines',
       hubIata: 'SIN',
       commonDestinations: ['LHR', 'SYD', 'HND', 'JFK', 'LAX', 'FRA', 'BOM', 'DEL'],
@@ -352,6 +364,7 @@ class AviationDataService {
     ),
     'LH': AirlineRecord(
       iata: 'LH',
+      icao: 'DLH',
       name: 'Lufthansa',
       hubIata: 'FRA',
       commonDestinations: ['JFK', 'ORD', 'DEL', 'SIN', 'HND', 'LHR', 'DXB'],
@@ -359,6 +372,7 @@ class AviationDataService {
     ),
     'AF': AirlineRecord(
       iata: 'AF',
+      icao: 'AFR',
       name: 'Air France',
       hubIata: 'CDG',
       commonDestinations: ['JFK', 'LAX', 'DXB', 'SIN', 'HND', 'ATL', 'LHR'],
@@ -366,10 +380,21 @@ class AviationDataService {
     ),
   };
 
-  /// Query OpenSky Network live ADS-B state vectors (Free, no API key).
+  /// Query OpenSky Network live ADS-B state vectors (free, no API key).
+  ///
+  /// [callsign] must be the ICAO-format callsign (e.g. "AAL100"), which is what
+  /// aircraft actually transmit -- an IATA flight number ("AA100") will never
+  /// appear in this feed.
+  ///
+  /// Note: this endpoint returns the entire global state vector (~850 KB /
+  /// ~6,600 aircraft) and regularly takes well over 30 s to respond, so the
+  /// short timeout below means it will usually yield nothing on a mobile
+  /// connection. Callers must treat a null result as "no live data", not as
+  /// an error.
   Future<Map<String, dynamic>?> fetchOpenSkyLivePosition(String callsign) async {
     try {
       final cleanCallsign = callsign.toUpperCase().trim();
+      if (cleanCallsign.isEmpty) return null;
       final url = Uri.parse('https://opensky-network.org/api/states/all');
       final response = await http.get(url).timeout(const Duration(seconds: 4));
 
@@ -379,7 +404,12 @@ class AviationDataService {
         if (states != null) {
           for (final state in states) {
             final cs = (state[1] as String?)?.trim() ?? '';
-            if (cs.contains(cleanCallsign) || cleanCallsign.contains(cs)) {
+            // A blank callsign used to satisfy `query.contains(cs)` and matched
+            // EVERY query, so the first unidentified aircraft in the feed was
+            // reported as the user's flight. Conversely a correct ICAO callsign
+            // (AAL100) never matched an IATA query (AA100). Compare explicitly.
+            if (cs.isEmpty) continue;
+            if (cs == cleanCallsign) {
               return {
                 'icao24': state[0],
                 'callsign': cs,
@@ -415,10 +445,14 @@ class AviationDataService {
     String airlineCode = '';
     int flightNum = 0;
 
-    final match = RegExp(r'^([A-Z0-9]{2,3})(\d+)$').firstMatch(query);
+    // The airline designator is 2 alphanumerics (AA, DL, 6E) or 3 letters
+    // (UAE, THY); the flight number is everything after it. The previous
+    // pattern let the greedy 2-3 char group eat the first digit, so `AA100`
+    // parsed as airline "AA1" / flight "00" and never matched a real airline.
+    final match = RegExp(r'^([A-Z]{3}|[A-Z0-9]{2})(\d{1,4}[A-Z]?)$').firstMatch(query);
     if (match != null) {
       airlineCode = match.group(1)!;
-      flightNum = int.tryParse(match.group(2)!) ?? 100;
+      flightNum = int.tryParse(match.group(2)!.replaceAll(RegExp(r'[^0-9]'), '')) ?? 100;
     } else {
       airlineCode = query.substring(0, min(2, query.length));
       flightNum = 100;
@@ -489,9 +523,17 @@ class AviationDataService {
     final arrGate = '${String.fromCharCode(65 + ((flightNum + 2) % 4))}${((flightNum + 5) % 30) + 1}';
     final baggageClaim = 'Belt ${(flightNum % 8) + 1}';
 
-    // Check OpenSky for real-time transponder
-    final openSkyData = await fetchOpenSkyLivePosition(query);
-    final dataSource = openSkyData != null ? 'openskynetwork_live' : 'skypulse_aviation_engine';
+    // Check OpenSky for a real-time transponder match, using the ICAO callsign.
+    // Only claim a live source when an actual aircraft was matched; every other
+    // field on this Flight is derived locally, not observed.
+    final icaoCallsign =
+        airline.icao.isNotEmpty ? '${airline.icao}$flightNum' : '';
+    final openSkyData = icaoCallsign.isEmpty
+        ? null
+        : await fetchOpenSkyLivePosition(icaoCallsign);
+    final dataSource = openSkyData != null
+        ? 'openskynetwork_live'
+        : 'skypulse_aviation_engine';
 
     final flight = Flight(
       id: '',
@@ -564,6 +606,10 @@ class AviationDataService {
       fetchedAt: DateTime.now(),
     );
   }
+
+  /// Great-circle distance in kilometres between two coordinates.
+  double distanceKm(double lat1, double lon1, double lat2, double lon2) =>
+      _calculateDistanceKm(lat1, lon1, lat2, lon2);
 
   /// Calculate great-circle distance in kilometers using Haversine formula.
   double _calculateDistanceKm(double lat1, double lon1, double lat2, double lon2) {

@@ -15,6 +15,13 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen>
     with SingleTickerProviderStateMixin {
   final _emailController = TextEditingController();
+  String? _emailError;
+
+  /// Deliberately permissive -- just enough to stop an obviously malformed
+  /// address making a pointless round trip and returning a raw API error.
+  static final _emailPattern = RegExp(r'^[^@\s]+@[^@\s.]+\.[^@\s]+$');
+  static bool _isValidEmail(String value) => _emailPattern.hasMatch(value);
+
   late AnimationController _animController;
   late Animation<double> _fadeAnim;
   late Animation<Offset> _slideAnim;
@@ -88,7 +95,11 @@ class _LoginScreenState extends State<LoginScreen>
               child: Center(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.symmetric(horizontal: 32),
-                  child: FadeTransition(
+                  // Without a cap the form stretched edge to edge on desktop
+                  // and web, leaving inputs hundreds of pixels wide.
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 400),
+                    child: FadeTransition(
                     opacity: _fadeAnim,
                     child: SlideTransition(
                       position: _slideAnim,
@@ -156,13 +167,11 @@ class _LoginScreenState extends State<LoginScreen>
                                   : () => context
                                       .read<AuthBloc>()
                                       .add(AuthGoogleSignInRequested()),
-                              icon: Image.network(
-                                'https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg',
-                                width: 20,
-                                height: 20,
-                                errorBuilder: (_, _, _) =>
-                                    const Icon(Icons.g_mobiledata, size: 24),
-                              ),
+                              // Image.network cannot decode SVG, so the remote
+                              // Google mark always failed and silently fell
+                              // back to a generic glyph -- plus it made a
+                              // network request on every build of this screen.
+                              icon: const _GoogleMark(size: 18),
                               label: Text(
                                 state is AuthLoading
                                     ? 'Signing in...'
@@ -216,9 +225,11 @@ class _LoginScreenState extends State<LoginScreen>
                             controller: _emailController,
                             keyboardType: TextInputType.emailAddress,
                             style: TextStyle(color: cs.onSurface),
-                            decoration: const InputDecoration(
+                            onSubmitted: (_) => setState(() => _emailError = null),
+                            decoration: InputDecoration(
                               hintText: 'Email address',
-                              prefixIcon: Icon(Icons.email_outlined),
+                              prefixIcon: const Icon(Icons.email_outlined),
+                              errorText: _emailError,
                             ),
                           ),
                           const SizedBox(height: 16),
@@ -232,11 +243,16 @@ class _LoginScreenState extends State<LoginScreen>
                                   : () {
                                       final email =
                                           _emailController.text.trim();
-                                      if (email.isNotEmpty) {
-                                        context
-                                            .read<AuthBloc>()
-                                            .add(AuthMagicLinkRequested(email));
+                                      if (!_isValidEmail(email)) {
+                                        setState(() => _emailError = email.isEmpty
+                                            ? 'Enter your email address'
+                                            : 'Enter a valid email address');
+                                        return;
                                       }
+                                      setState(() => _emailError = null);
+                                      context
+                                          .read<AuthBloc>()
+                                          .add(AuthMagicLinkRequested(email));
                                     },
                               child: const Text('Send Magic Link'),
                             ),
@@ -282,6 +298,7 @@ class _LoginScreenState extends State<LoginScreen>
                           ),
                         ],
                       ),
+                      ),
                     ),
                   ),
                 ),
@@ -292,4 +309,62 @@ class _LoginScreenState extends State<LoginScreen>
       ),
     );
   }
+}
+
+/// The Google "G" drawn locally, so the sign-in button renders correctly
+/// offline and without a network round trip.
+class _GoogleMark extends StatelessWidget {
+  final double size;
+  const _GoogleMark({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(painter: _GoogleMarkPainter()),
+    );
+  }
+}
+
+class _GoogleMarkPainter extends CustomPainter {
+  static const _blue = Color(0xFF4285F4);
+  static const _green = Color(0xFF34A853);
+  static const _yellow = Color(0xFFFBBC05);
+  static const _red = Color(0xFFEA4335);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = size.width * 0.22;
+    final rect = Rect.fromLTWH(
+      stroke / 2,
+      stroke / 2,
+      size.width - stroke,
+      size.height - stroke,
+    );
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.butt;
+
+    // Four quadrant arcs in Google's brand colours.
+    canvas.drawArc(rect, -0.35, 1.22, false, paint..color = _red);
+    canvas.drawArc(rect, 0.87, 1.40, false, paint..color = _yellow);
+    canvas.drawArc(rect, 2.27, 1.40, false, paint..color = _green);
+    canvas.drawArc(rect, 3.67, 1.75, false, paint..color = _blue);
+
+    // The horizontal bar of the G.
+    canvas.drawRect(
+      Rect.fromLTWH(
+        size.width * 0.52,
+        size.height * 0.41,
+        size.width * 0.48 - stroke / 2,
+        stroke,
+      ),
+      Paint()..color = _blue,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../config/app_config.dart';
 
 class StaleDataBanner extends StatelessWidget {
   final DateTime lastUpdated;
@@ -11,7 +12,7 @@ class StaleDataBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final difference = DateTime.now().difference(lastUpdated);
-    final isStale = difference.inMinutes > 30; // Consider stale if older than 30 mins
+    final isStale = difference.inMinutes > AppConfig.staleDataThresholdMinutes;
 
     if (!isStale) return const SizedBox.shrink();
 

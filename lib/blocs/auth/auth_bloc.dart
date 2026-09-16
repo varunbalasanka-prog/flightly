@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -70,9 +72,30 @@ class AuthError extends AuthBlocState {
 
 // ── BLoC ──
 
+/// Turns provider exceptions into something worth showing a user.
+/// Previously the raw `e.toString()` was surfaced verbatim, so a mistyped
+/// address produced "AuthApiException(message: Unable to validate email
+/// address: invalid format, statusCode: 400, code: validation_failed)".
+String _friendlyAuthError(Object error, String fallback) {
+  if (error is AuthApiException) {
+    final code = error.code;
+    if (code == 'validation_failed') return 'That email address looks invalid.';
+    if (code == 'over_email_send_rate_limit' ||
+        code == 'over_request_rate_limit') {
+      return 'Too many attempts. Please wait a moment and try again.';
+    }
+    if (code == 'email_address_invalid') {
+      return 'That email address looks invalid.';
+    }
+    return error.message;
+  }
+  return fallback;
+}
+
 class AuthBloc extends Bloc<AuthEvent, AuthBlocState> {
   final SupabaseClient _supabase;
   final GoogleSignIn _googleSignIn;
+  StreamSubscription<AuthState>? _authSubscription;
 
   AuthBloc({
     required this._supabase,
@@ -90,18 +113,24 @@ class AuthBloc extends Bloc<AuthEvent, AuthBlocState> {
     on<AuthStateChanged>(_onAuthStateChanged);
 
     // Listen to Supabase auth state changes
-    _supabase.auth.onAuthStateChange.listen((data) {
+    _authSubscription = _supabase.auth.onAuthStateChange.listen((data) {
       add(AuthStateChanged(data));
     });
+  }
+
+  @override
+  Future<void> close() {
+    _authSubscription?.cancel();
+    return super.close();
   }
 
   Future<void> _onCheckRequested(
     AuthCheckRequested event,
     Emitter<AuthBlocState> emit,
   ) async {
-    final session = _supabase.auth.currentSession;
-    if (session != null) {
-      emit(AuthAuthenticated(_supabase.auth.currentUser!));
+    final user = _supabase.auth.currentSession?.user;
+    if (user != null) {
+      emit(AuthAuthenticated(user));
     } else {
       emit(AuthUnauthenticated());
     }
@@ -158,7 +187,9 @@ class AuthBloc extends Bloc<AuthEvent, AuthBlocState> {
 
       // Auth state change listener will emit AuthAuthenticated
     } catch (e) {
-      emit(AuthError('Google sign-in failed: ${e.toString()}'));
+      emit(AuthError(
+        _friendlyAuthError(e, 'Google sign-in failed. Please try again.'),
+      ));
     }
   }
 
@@ -175,7 +206,9 @@ class AuthBloc extends Bloc<AuthEvent, AuthBlocState> {
       );
       emit(AuthMagicLinkSent(event.email));
     } catch (e) {
-      emit(AuthError('Failed to send magic link: ${e.toString()}'));
+      emit(AuthError(
+        _friendlyAuthError(e, "Couldn't send the sign-in link. Please try again."),
+      ));
     }
   }
 

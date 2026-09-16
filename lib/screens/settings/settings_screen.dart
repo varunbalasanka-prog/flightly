@@ -94,20 +94,25 @@ class SettingsScreen extends StatelessWidget {
           Card(
             child: Column(
               children: [
-                SwitchListTile(
-                  title: const Text('Dark Mode'),
-                  subtitle: const Text('Match system theme'),
+                // Both of these were live-looking switches wired to `(v) {}`:
+                // permanently on, and silently doing nothing when tapped.
+                // Until theme switching and push delivery are actually
+                // implemented, show them as explicitly unavailable rather
+                // than pretending they work.
+                const SwitchListTile(
+                  title: Text('Dark Mode'),
+                  subtitle: Text('SkyPulse is dark-only in this beta'),
                   value: true,
-                  onChanged: (v) {},
-                  secondary: const Icon(Icons.dark_mode_outlined),
+                  onChanged: null,
+                  secondary: Icon(Icons.dark_mode_outlined),
                 ),
                 const Divider(height: 1),
-                SwitchListTile(
-                  title: const Text('Push Notifications'),
-                  subtitle: const Text('Flight status updates'),
-                  value: true,
-                  onChanged: (v) {},
-                  secondary: const Icon(Icons.notifications_outlined),
+                const SwitchListTile(
+                  title: Text('Push Notifications'),
+                  subtitle: Text('Not available yet in this beta'),
+                  value: false,
+                  onChanged: null,
+                  secondary: Icon(Icons.notifications_off_outlined),
                 ),
               ],
             ),

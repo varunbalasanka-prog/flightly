@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import '../../blocs/flight/flight_bloc.dart';
+import '../../blocs/flight_lookup/flight_lookup_bloc.dart';
 import '../../models/models.dart';
 
 /// Flight search screen — search live commercial flights.
@@ -47,22 +48,39 @@ class _FlightSearchScreenState extends State<FlightSearchScreen> {
       _selectedFlight = null;
     });
 
-    context.read<FlightBloc>().add(FlightLookupRequested(query));
+    context.read<FlightLookupBloc>().add(FlightLookupRequested(query));
   }
 
   Future<void> _addFlight(Flight flight) async {
+    // This used to fire the event and immediately claim success, so a failed
+    // insert (quota, RLS, offline) still told the user the flight was tracked.
     setState(() => _isSaving = true);
-    context.read<FlightBloc>().add(FlightAddRequested(flight));
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final cs = Theme.of(context).colorScheme;
+    final bloc = context.read<FlightBloc>();
+
+    try {
+      await bloc.addFlight(flight);
+      if (!mounted) return;
+      messenger.showSnackBar(
         SnackBar(
-          content: Text('${flight.flightNumber} added to your tracked flights!'),
-          backgroundColor: Theme.of(context).colorScheme.primary,
+          content: Text('${flight.flightNumber} added to your tracked flights'),
+          backgroundColor: cs.primary,
           duration: const Duration(seconds: 2),
         ),
       );
-      Navigator.of(context).pop();
+      navigator.pop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text("Couldn't track ${flight.flightNumber}. Please try again."),
+          backgroundColor: cs.error,
+        ),
+      );
     }
   }
 
@@ -74,7 +92,7 @@ class _FlightSearchScreenState extends State<FlightSearchScreen> {
       appBar: AppBar(
         title: const Text('Search Flight'),
       ),
-      body: BlocConsumer<FlightBloc, FlightState>(
+      body: BlocConsumer<FlightLookupBloc, FlightLookupState>(
         listener: (context, state) {
           if (state is FlightLookupSuccess && state.result.hasResults) {
             setState(() {
@@ -179,7 +197,8 @@ class _FlightSearchScreenState extends State<FlightSearchScreen> {
     );
   }
 
-  Widget _buildResultsArea(BuildContext context, FlightState state, ColorScheme cs) {
+  Widget _buildResultsArea(
+      BuildContext context, FlightLookupState state, ColorScheme cs) {
     if (state is FlightLookupInProgress) {
       return Center(
         child: Padding(

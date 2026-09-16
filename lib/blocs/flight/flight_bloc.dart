@@ -1,17 +1,23 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
+
 import '../../models/models.dart';
-import '../../providers/flight_data_provider.dart';
 import '../../repositories/flight_repository.dart';
+
+/// The user's tracked flights.
+///
+/// Backed by a Supabase realtime subscription, so status changes written by the
+/// poll-flights function reach the UI without a manual refresh. Provider
+/// lookups live in `FlightLookupBloc`; they previously shared this state union,
+/// which made the two fight over the same screen.
 
 // --- Events ---
 abstract class FlightEvent {}
 
-class FlightLoadRequested extends FlightEvent {}
+/// Subscribe to the live flight list. Emits on every change.
+class FlightSubscriptionRequested extends FlightEvent {}
 
-class FlightLookupRequested extends FlightEvent {
-  final String flightIata;
-  FlightLookupRequested(this.flightIata);
-}
+/// One-shot fetch, for pull-to-refresh or when realtime is unavailable.
+class FlightLoadRequested extends FlightEvent {}
 
 class FlightAddRequested extends FlightEvent {
   final Flight flight;
@@ -27,65 +33,73 @@ class FlightDeleteRequested extends FlightEvent {
 abstract class FlightState {}
 
 class FlightInitial extends FlightState {}
+
 class FlightLoadInProgress extends FlightState {}
+
 class FlightLoadSuccess extends FlightState {
   final List<Flight> flights;
   FlightLoadSuccess(this.flights);
 }
+
 class FlightLoadFailure extends FlightState {
   final String error;
   FlightLoadFailure(this.error);
-}
-
-class FlightLookupInProgress extends FlightState {}
-class FlightLookupSuccess extends FlightState {
-  final FlightLookupResult result;
-  FlightLookupSuccess(this.result);
-}
-class FlightLookupFailure extends FlightState {
-  final String error;
-  FlightLookupFailure(this.error);
 }
 
 // --- BLoC ---
 class FlightBloc extends Bloc<FlightEvent, FlightState> {
   final FlightRepository _repository;
 
-  FlightBloc({required this._repository})
-      : super(FlightInitial()) {
+  FlightBloc({required this._repository}) : super(FlightInitial()) {
+    on<FlightSubscriptionRequested>(_onSubscriptionRequested);
     on<FlightLoadRequested>(_onLoadRequested);
-    on<FlightLookupRequested>(_onLookupRequested);
     on<FlightAddRequested>(_onAddRequested);
     on<FlightDeleteRequested>(_onDeleteRequested);
   }
 
-  Future<void> _onLoadRequested(
-      FlightLoadRequested event, Emitter<FlightState> emit) async {
+  Future<void> _onSubscriptionRequested(
+    FlightSubscriptionRequested event,
+    Emitter<FlightState> emit,
+  ) async {
     emit(FlightLoadInProgress());
+
+    // emit.forEach keeps the handler alive for the life of the stream, so the
+    // subscription is cancelled automatically when the bloc closes.
+    await emit.forEach<List<Flight>>(
+      _repository.streamFlights(),
+      onData: FlightLoadSuccess.new,
+      onError: (_, _) =>
+          FlightLoadFailure("Couldn't load your flights. Pull to refresh."),
+    );
+  }
+
+  Future<void> _onLoadRequested(
+    FlightLoadRequested event,
+    Emitter<FlightState> emit,
+  ) async {
+    if (state is! FlightLoadSuccess) emit(FlightLoadInProgress());
     try {
-      final flights = await _repository.getFlights();
-      emit(FlightLoadSuccess(flights));
-    } catch (e) {
-      emit(FlightLoadFailure(e.toString()));
+      emit(FlightLoadSuccess(await _repository.getFlights()));
+    } catch (_) {
+      emit(FlightLoadFailure("Couldn't load your flights. Please try again."));
     }
   }
 
-  Future<void> _onLookupRequested(
-      FlightLookupRequested event, Emitter<FlightState> emit) async {
-    emit(FlightLookupInProgress());
-    try {
-      final result = await _repository.lookupFlight(event.flightIata);
-      emit(FlightLookupSuccess(result));
-    } catch (e) {
-      emit(FlightLookupFailure(e.toString()));
-    }
+  /// Saves a flight and completes only once the write succeeds, so callers can
+  /// report the real outcome instead of assuming it.
+  Future<void> addFlight(Flight flight) async {
+    await _repository.addFlight(flight);
+    add(FlightLoadRequested());
   }
 
   Future<void> _onAddRequested(
-      FlightAddRequested event, Emitter<FlightState> emit) async {
+    FlightAddRequested event,
+    Emitter<FlightState> emit,
+  ) async {
     try {
       await _repository.addFlight(event.flight);
-      // Reload flights after adding
+      // The realtime stream delivers the new row; refresh only as a fallback
+      // for when no subscription is active.
       add(FlightLoadRequested());
     } catch (e) {
       emit(FlightLoadFailure('Failed to add flight: $e'));
@@ -93,12 +107,14 @@ class FlightBloc extends Bloc<FlightEvent, FlightState> {
   }
 
   Future<void> _onDeleteRequested(
-      FlightDeleteRequested event, Emitter<FlightState> emit) async {
+    FlightDeleteRequested event,
+    Emitter<FlightState> emit,
+  ) async {
     try {
       await _repository.deleteFlight(event.flightId);
       add(FlightLoadRequested());
     } catch (e) {
-      emit(FlightLoadFailure('Failed to delete flight: $e'));
+      emit(FlightLoadFailure('Failed to remove flight: $e'));
     }
   }
 }

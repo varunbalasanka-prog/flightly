@@ -15,7 +15,12 @@ serve(async (req) => {
   }
 
   try {
-    const { flightIata } = await req.json()
+    // The Flutter client posts { flight_number }. This handler used to accept
+    // only { flightIata }, so every real lookup returned 400 and the client
+    // silently fell through to its offline fallback -- the live data path was
+    // never actually exercised. Accept both spellings.
+    const body = await req.json()
+    const flightIata = body.flight_number ?? body.flightIata
     if (!flightIata) {
       return new Response(JSON.stringify({ error: 'Flight IATA is required' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -71,14 +76,19 @@ serve(async (req) => {
     // Return the data back to client. 
     // The client will be responsible for creating the trip/flight record if they want to save it.
     // Or we could insert it here. For lookup, we just return the data.
-    return new Response(JSON.stringify({ data: normalizedData }), {
+    // Shape must match what the client parses: { flights: [...], source }.
+    return new Response(JSON.stringify({
+      flights: [normalizedData],
+      source: 'aviationstack',
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     })
 
   } catch (error) {
+    // Log the detail server-side; don't hand internal messages to the client.
     console.error('flight-lookup error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: 'Flight lookup failed' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })

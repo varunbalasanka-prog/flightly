@@ -10,7 +10,7 @@ class HomeScreen extends StatelessWidget {
   static const _tabs = [
     (icon: Icons.card_travel_rounded, label: 'Trips'),
     (icon: Icons.flight_rounded, label: 'Flights'),
-    (icon: Icons.map_rounded, label: 'Map'),
+    (icon: Icons.public, label: 'World'),
     (icon: Icons.people_outline_rounded, label: 'Friends'),
     (icon: Icons.person_outline_rounded, label: 'Profile'),
   ];

@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
-import '../../blocs/flight/flight_bloc.dart';
 import '../../blocs/flight_lookup/flight_lookup_bloc.dart';
 import '../../models/models.dart';
+import 'add_flight_flow.dart';
 
 /// Flight search screen — search live commercial flights.
 /// Connects to OpenSky Network & Built-in Aviation Engine.
@@ -52,35 +52,14 @@ class _FlightSearchScreenState extends State<FlightSearchScreen> {
   }
 
   Future<void> _addFlight(Flight flight) async {
-    // This used to fire the event and immediately claim success, so a failed
-    // insert (quota, RLS, offline) still told the user the flight was tracked.
     setState(() => _isSaving = true);
-
-    final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
-    final cs = Theme.of(context).colorScheme;
-    final bloc = context.read<FlightBloc>();
-
-    try {
-      await bloc.addFlight(flight);
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('${flight.flightNumber} added to your tracked flights'),
-          backgroundColor: cs.primary,
-          duration: const Duration(seconds: 2),
-        ),
-      );
+    final saved = await completeAddFlight(context, flight);
+    if (!mounted) return;
+    if (saved != null) {
       navigator.pop();
-    } catch (_) {
-      if (!mounted) return;
+    } else {
       setState(() => _isSaving = false);
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text("Couldn't track ${flight.flightNumber}. Please try again."),
-          backgroundColor: cs.error,
-        ),
-      );
     }
   }
 

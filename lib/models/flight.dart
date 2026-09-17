@@ -44,6 +44,14 @@ class Flight extends Equatable {
   /// persisted: rows in the database always carry a real schedule.
   final bool scheduleIsKnown;
 
+  /// The radio station the traveller picked for their destination, as stored
+  /// by RadioStation.toJson.
+  final Map<String, dynamic>? destinationRadio;
+
+  /// Tail number of the aircraft operating this flight, if the traveller knows
+  /// it (airline apps usually show it). Enables "where's my plane".
+  final String? aircraftRegistration;
+
   const Flight({
     required this.id,
     required this.flightNumber,
@@ -74,6 +82,8 @@ class Flight extends Equatable {
     this.lastUpdated,
     this.dataSource,
     this.scheduleIsKnown = true,
+    this.destinationRadio,
+    this.aircraftRegistration,
   });
 
   /// The best-known departure time (actual > estimated > scheduled).
@@ -127,6 +137,8 @@ class Flight extends Equatable {
     DateTime? lastUpdated,
     String? dataSource,
     bool? scheduleIsKnown,
+    Map<String, dynamic>? destinationRadio,
+    String? aircraftRegistration,
   }) {
     return Flight(
       id: id ?? this.id,
@@ -158,6 +170,8 @@ class Flight extends Equatable {
       lastUpdated: lastUpdated ?? this.lastUpdated,
       dataSource: dataSource ?? this.dataSource,
       scheduleIsKnown: scheduleIsKnown ?? this.scheduleIsKnown,
+      destinationRadio: destinationRadio ?? this.destinationRadio,
+      aircraftRegistration: aircraftRegistration ?? this.aircraftRegistration,
     );
   }
 
@@ -205,6 +219,8 @@ class Flight extends Equatable {
           ? DateTime.parse(json['last_updated'] as String)
           : null,
       dataSource: json['data_source'] as String?,
+      destinationRadio: (json['destination_radio'] as Map?)?.cast<String, dynamic>(),
+      aircraftRegistration: json['aircraft_registration'] as String?,
     );
   }
 
@@ -237,6 +253,8 @@ class Flight extends Equatable {
       'is_history': isHistory,
       'last_updated': lastUpdated?.toIso8601String(),
       'data_source': dataSource,
+      'destination_radio': destinationRadio,
+      'aircraft_registration': aircraftRegistration,
     };
     if (id.isNotEmpty && id.length == 36) {
       map['id'] = id;
@@ -246,7 +264,7 @@ class Flight extends Equatable {
 
   @override
   List<Object?> get props =>
-      [id, flightNumber, status, lastUpdated, scheduleIsKnown];
+      [id, flightNumber, status, lastUpdated, scheduleIsKnown, destinationRadio, aircraftRegistration];
 }
 
 /// Aircraft information associated with a flight.

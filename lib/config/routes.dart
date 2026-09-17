@@ -15,6 +15,11 @@ import '../screens/connections/connection_screen.dart';
 import '../screens/history/flight_history_screen.dart';
 import '../screens/sharing/friends_screen.dart';
 import '../screens/settings/settings_screen.dart';
+import '../screens/assistant/assistant_screen.dart';
+import '../screens/cockpit/cockpit_screen.dart';
+import '../screens/flights/public_live_screen.dart';
+import '../screens/flights/replay_screen.dart';
+import '../screens/world/world_screen.dart';
 
 /// GoRouter configuration for SkyPulse.
 /// Uses shell route for bottom navigation persistence.
@@ -49,6 +54,10 @@ class AppRouter {
       initialLocation: '/',
       redirect: (context, state) {
         final loggingIn = state.matchedLocation == '/login';
+        // Shared live-flight links show only public ADS-B data and work
+        // without an account.
+        final publicPage = state.matchedLocation.startsWith('/live/');
+        if (publicPage) return null;
 
         if (!_isAuthenticated && !loggingIn) return '/login';
         if (_isAuthenticated && loggingIn) return '/';
@@ -100,6 +109,13 @@ class AppRouter {
                   ),
                 ),
                 GoRoute(
+                  path: 'flight/:flightId/replay',
+                  parentNavigatorKey: _rootNavigatorKey,
+                  builder: (context, state) => state.extra is Flight
+                      ? ReplayScreen(flight: state.extra as Flight)
+                      : const _MissingFlight(),
+                ),
+                GoRoute(
                   path: 'flight/:flightId/map',
                   parentNavigatorKey: _rootNavigatorKey,
                   builder: (context, state) => LiveMapScreen(
@@ -118,11 +134,12 @@ class AppRouter {
               ),
             ),
 
-            // Tab 3: Map overview
+            // Tab 3: World — every flight, military traffic and installations,
+            // radio, cameras, earthquakes and satellites.
             GoRoute(
               path: '/map',
               pageBuilder: (context, state) => const NoTransitionPage(
-                child: LiveMapScreen(),
+                child: WorldScreen(),
               ),
             ),
 
@@ -146,6 +163,23 @@ class AppRouter {
 
         // Standalone routes (outside bottom nav)
         GoRoute(
+          path: '/cockpit',
+          builder: (context, state) {
+            final extra = state.extra is Map ? (state.extra as Map).cast<String, dynamic>() : const <String, dynamic>{};
+            return CockpitScreen(hex: extra['hex'] as String?, callsign: extra['callsign'] as String?);
+          },
+        ),
+        GoRoute(
+          path: '/assistant',
+          builder: (context, state) => const AssistantScreen(),
+        ),
+        GoRoute(
+          path: '/live/:callsign',
+          builder: (context, state) => PublicLiveScreen(
+            callsign: state.pathParameters['callsign']!.toUpperCase(),
+          ),
+        ),
+        GoRoute(
           path: '/airport/:iataCode',
           builder: (context, state) => AirportStatusScreen(
             iataCode: state.pathParameters['iataCode']!,
@@ -164,4 +198,14 @@ class AppRouter {
       ],
     );
   }
+}
+
+class _MissingFlight extends StatelessWidget {
+  const _MissingFlight();
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(),
+        body: const Center(child: Text('Open the replay from a flight in your list.')),
+      );
 }

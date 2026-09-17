@@ -10,6 +10,9 @@ import '../../blocs/flight/flight_bloc.dart';
 import '../../config/map_tiles.dart';
 import '../../models/models.dart';
 import '../../services/adsb_data_service.dart';
+import '../../services/trace_service.dart';
+import '../../utils/motion_model.dart';
+import '../../utils/route_plausibility.dart';
 import '../../services/aviation_data_service.dart';
 
 /// Live flight map with high-precision great-circle paths, real-time aircraft positioning,
@@ -39,6 +42,19 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
   /// Real airport coordinates for this flight, from adsbdb. The local table
   /// only holds 19 airports, and routes now resolve worldwide.
   FlightRoute? _route;
+
+  /// Previous fix, so the marker can follow a turn between updates.
+  MotionFix? _previousFix;
+  MotionFix? _latestFix;
+
+  /// The path this aircraft has actually flown on its current leg.
+  List<LatLng> _flownPath = const [];
+  String? _pathHex;
+
+  /// Set when the aircraft broadcasting this callsign is somewhere the saved
+  /// route could not be — usually a reused flight number on a different leg.
+  bool _liveFixRejected = false;
+  Timer? _motionTimer;
   Timer? _positionTimer;
   String? _trackedCallsign;
 
@@ -52,11 +68,16 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
       const Duration(seconds: 20),
       (_) => _refreshLivePosition(),
     );
+    // Glide between fixes rather than jumping every 20 seconds.
+    _motionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _latestFix != null && !_liveFixRejected) setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _positionTimer?.cancel();
+    _motionTimer?.cancel();
     _mapController.dispose();
     super.dispose();
   }
@@ -68,9 +89,51 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
     if (target == null || target.isEmpty) return;
     _trackedCallsign = target;
 
-    final position = await AdsbDataService.instance.lookupLivePosition(target);
+    final position = await AdsbDataService.instance.lookupLivePosition(
+      target,
+      icaoCallsign: _route?.callsignIcao,
+    );
     if (!mounted) return;
-    setState(() => _livePosition = position);
+
+    var rejected = false;
+    final route = _route;
+    if (position != null && route != null) {
+      rejected = !RoutePlausibility.plausible(
+        lat: position.latitude,
+        lon: position.longitude,
+        altitudeFt: position.altitudeFeet,
+        verticalRateFpm: position.verticalRateFpm,
+        originLat: route.origin.latitude,
+        originLon: route.origin.longitude,
+        destLat: route.destination.latitude,
+        destLon: route.destination.longitude,
+      );
+    }
+
+    setState(() {
+      _livePosition = rejected ? null : position;
+      _liveFixRejected = rejected;
+      if (position != null && !rejected) {
+        final fix = MotionFix(
+          time: position.observedAt,
+          lat: position.latitude,
+          lon: position.longitude,
+          trackDeg: position.headingDegrees,
+          groundSpeedKt: position.groundSpeedKnots,
+        );
+        if (_latestFix != null) _previousFix = _latestFix;
+        _latestFix = fix;
+      } else {
+        _latestFix = null;
+        _previousFix = null;
+      }
+    });
+
+    if (position != null && !rejected && _pathHex != position.modeSHex) {
+      _pathHex = position.modeSHex;
+      final trace = TraceService.lastLeg(await TraceService.instance.trace(position.modeSHex));
+      if (mounted) setState(() => _flownPath = [for (final t in trace) LatLng(t.lat, t.lon)]);
+    }
   }
 
   /// Resolves real airport coordinates once per flight. Cached for 24h by the
@@ -171,9 +234,14 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
         final estimatedLatLng = polylinePoints[index];
         final nextLatLng = polylinePoints[nextIndex];
 
-        final planeLatLng = hasLiveFix
-            ? LatLng(live.latitude, live.longitude)
-            : estimatedLatLng;
+        final predicted = hasLiveFix && _latestFix != null
+            ? MotionModel.predict(_latestFix!, previous: _previousFix)
+            : null;
+        final planeLatLng = predicted != null
+            ? LatLng(predicted.lat, predicted.lon)
+            : hasLiveFix
+                ? LatLng(live.latitude, live.longitude)
+                : estimatedLatLng;
 
         // The aircraft broadcasts its own track; only derive one when it does not.
         final headingRad = hasLiveFix && live.headingDegrees != null
@@ -241,9 +309,17 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                       // Solid route polyline
                       Polyline(
                         points: polylinePoints,
-                        color: cs.primary,
+                        color: cs.primary.withValues(alpha: _flownPath.length > 1 ? 0.35 : 1),
                         strokeWidth: 3,
                       ),
+                      // The path actually flown, from the aircraft's own
+                      // transponder history.
+                      if (_flownPath.length > 1 && hasLiveFix)
+                        Polyline(
+                          points: [..._flownPath, planeLatLng],
+                          color: Colors.amberAccent,
+                          strokeWidth: 3,
+                        ),
                     ],
                   ),
 
@@ -307,6 +383,25 @@ class _LiveMapScreenState extends State<LiveMapScreen> {
                   MapTiles.attribution(),
                   ],
               ),
+
+              if (_liveFixRejected)
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  top: MediaQuery.of(context).padding.top + kToolbarHeight + 8,
+                  child: Material(
+                    color: Colors.amber.shade800,
+                    borderRadius: BorderRadius.circular(10),
+                    child: const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: Text(
+                        "An aircraft is using this flight number, but it's not on this route — "
+                        "likely a different leg. Its position isn't shown.",
+                        style: TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
+                  ),
+                ),
 
               // ── Floating Telemetry HUD Card ──
               Positioned(

@@ -3,11 +3,17 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+
 import '../../blocs/flight/flight_bloc.dart';
 import '../../blocs/sharing/sharing_bloc.dart';
 import '../../config/theme.dart';
 import '../../models/models.dart';
+import '../../services/airport_directory.dart';
+import '../../services/weather_service.dart';
+import '../../services/world_traffic_service.dart';
 import '../../utils/delay_risk_calculator.dart';
+import '../destination/destination_panel.dart';
+import 'flight_extras.dart';
 
 /// Flight detail screen — the core screen of SkyPulse.
 /// Displays live flight status, gate changes, delay analysis, aircraft specs,
@@ -37,7 +43,21 @@ class FlightDetailScreen extends StatelessWidget {
           }
         }
 
-        flight ??= _fallbackFlight(flightId);
+        // This used to fall back to a hard-coded "AA 472 DFW → DCA" with a
+        // gate, terminal and delay, so an unknown id rendered a fake flight.
+        if (flight == null) {
+          return Scaffold(
+            appBar: AppBar(),
+            body: Center(
+              child: state is FlightLoadInProgress || state is FlightInitial
+                  ? const CircularProgressIndicator()
+                  : Text(
+                      'This flight is no longer in your list.',
+                      style: TextStyle(color: cs.onSurfaceVariant),
+                    ),
+            ),
+          );
+        }
 
         return Scaffold(
           body: CustomScrollView(
@@ -56,10 +76,8 @@ class FlightDetailScreen extends StatelessWidget {
                   IconButton(
                     icon: const Icon(Icons.map_outlined),
                     tooltip: 'Live Map',
-                    onPressed: () => context.push(
-                      '/flight/$flightId/map',
-                      extra: flight,
-                    ),
+                    onPressed: () =>
+                        context.push('/flight/$flightId/map', extra: flight),
                   ),
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.more_vert),
@@ -73,9 +91,16 @@ class FlightDetailScreen extends StatelessWidget {
                         value: 'delete',
                         child: Row(
                           children: [
-                            Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                            Icon(
+                              Icons.delete_outline,
+                              color: Colors.redAccent,
+                              size: 20,
+                            ),
                             SizedBox(width: 8),
-                            Text('Untrack Flight', style: TextStyle(color: Colors.redAccent)),
+                            Text(
+                              'Untrack Flight',
+                              style: TextStyle(color: Colors.redAccent),
+                            ),
                           ],
                         ),
                       ),
@@ -104,10 +129,15 @@ class FlightDetailScreen extends StatelessWidget {
                 child: _GateCard(flight: flight, cs: cs),
               ),
 
+              SliverToBoxAdapter(child: FlightActionsRow(flight: flight)),
+
               // ── Delay Risk Card ──
               SliverToBoxAdapter(
                 child: _DelayRiskCard(flight: flight, cs: cs),
               ),
+
+              SliverToBoxAdapter(child: WhereIsMyPlaneCard(flight: flight)),
+              SliverToBoxAdapter(child: LeaveForAirportCard(flight: flight)),
 
               // ── Timeline ──
               SliverToBoxAdapter(
@@ -119,6 +149,9 @@ class FlightDetailScreen extends StatelessWidget {
                 SliverToBoxAdapter(
                   child: _AircraftCard(aircraft: flight.aircraft!, cs: cs),
                 ),
+
+              // ── Destination: weather, radio, cameras, news ──
+              SliverToBoxAdapter(child: DestinationPanel(flight: flight)),
 
               // ── Data Freshness Footer ──
               SliverToBoxAdapter(
@@ -175,7 +208,10 @@ class FlightDetailScreen extends StatelessWidget {
                     Text(
                       'Friends can use this invite code in the Friends tab to track this flight in real time.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: cs.onSurfaceVariant,
+                      ),
                     ),
                     const SizedBox(height: 24),
                     if (shareState is SharingInProgress)
@@ -185,11 +221,16 @@ class FlightDetailScreen extends StatelessWidget {
                       )
                     else if (shareState is ShareCodeSuccess) ...[
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 14,
+                        ),
                         decoration: BoxDecoration(
                           color: cs.primary.withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: cs.primary.withValues(alpha: 0.4)),
+                          border: Border.all(
+                            color: cs.primary.withValues(alpha: 0.4),
+                          ),
                         ),
                         child: Text(
                           shareState.code,
@@ -204,9 +245,13 @@ class FlightDetailScreen extends StatelessWidget {
                       const SizedBox(height: 16),
                       ElevatedButton.icon(
                         onPressed: () {
-                          Clipboard.setData(ClipboardData(text: shareState.code));
+                          Clipboard.setData(
+                            ClipboardData(text: shareState.code),
+                          );
                           ScaffoldMessenger.of(sheetContext).showSnackBar(
-                            const SnackBar(content: Text('Invite code copied to clipboard!')),
+                            const SnackBar(
+                              content: Text('Invite code copied to clipboard!'),
+                            ),
                           );
                           Navigator.pop(sheetContext);
                         },
@@ -214,7 +259,10 @@ class FlightDetailScreen extends StatelessWidget {
                         label: const Text('Copy Invite Code'),
                       ),
                     ] else if (shareState is SharingFailure) ...[
-                      Text('Error: ${shareState.error}', style: TextStyle(color: cs.error)),
+                      Text(
+                        'Error: ${shareState.error}',
+                        style: TextStyle(color: cs.error),
+                      ),
                     ],
                     const SizedBox(height: 16),
                   ],
@@ -253,33 +301,6 @@ class FlightDetailScreen extends StatelessWidget {
       ),
     );
   }
-
-  Flight _fallbackFlight(String id) => Flight(
-    id: id,
-    flightNumber: 'AA 472',
-    airlineIata: 'AA',
-    airlineName: 'American Airlines',
-    departureAirportIata: 'DFW',
-    departureAirportName: 'Dallas/Fort Worth Intl',
-    arrivalAirportIata: 'DCA',
-    arrivalAirportName: 'Ronald Reagan Washington',
-    scheduledDeparture: DateTime.now().add(const Duration(hours: 1)),
-    scheduledArrival: DateTime.now().add(const Duration(hours: 4, minutes: 20)),
-    estimatedDeparture: DateTime.now().add(const Duration(hours: 1, minutes: 10)),
-    departureTerminal: 'C',
-    departureGate: 'C22',
-    arrivalTerminal: '2',
-    arrivalGate: '35A',
-    departureDelayMinutes: 10,
-    status: FlightStatusEnum.scheduled,
-    aircraft: const Aircraft(
-      registration: 'N717AN',
-      modelName: 'Boeing 737-800',
-      icaoCode: 'B738',
-    ),
-    lastUpdated: DateTime.now(),
-    dataSource: 'SkyPulse Live Engine',
-  );
 }
 
 class _StatusBanner extends StatelessWidget {
@@ -379,11 +400,7 @@ class _RouteHeader extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
                 children: [
-                  Icon(
-                    Icons.flight,
-                    color: cs.secondary,
-                    size: 24,
-                  ),
+                  Icon(Icons.flight, color: cs.secondary, size: 24),
                   const SizedBox(height: 6),
                   Container(
                     height: 1.5,
@@ -431,32 +448,39 @@ class _AirportColumn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: alignment,
-      children: [
-        Text(
-          iata,
-          style: GoogleFonts.inter(
-            fontSize: 34,
-            fontWeight: FontWeight.w800,
-            color: cs.onSurface,
-            letterSpacing: 1,
-          ),
-        ),
-        SizedBox(
-          width: 100,
-          child: Text(
-            name,
+    // Tap an airport code for its live conditions, traffic, cameras and radio.
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => context.push('/airport/$iata'),
+      child: Column(
+        crossAxisAlignment: alignment,
+        children: [
+          Text(
+            iata,
             style: GoogleFonts.inter(
-              fontSize: 12,
-              color: cs.onSurfaceVariant,
+              fontSize: 34,
+              fontWeight: FontWeight.w800,
+              color: cs.onSurface,
+              letterSpacing: 1,
             ),
-            textAlign: alignment == CrossAxisAlignment.start ? TextAlign.left : TextAlign.right,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
           ),
-        ),
-      ],
+          SizedBox(
+            width: 100,
+            child: Text(
+              name,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                color: cs.onSurfaceVariant,
+              ),
+              textAlign: alignment == CrossAxisAlignment.start
+                  ? TextAlign.left
+                  : TextAlign.right,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -686,10 +710,73 @@ class _GateBadge extends StatelessWidget {
   }
 }
 
-class _DelayRiskCard extends StatelessWidget {
+class _DelayRiskCard extends StatefulWidget {
   final Flight flight;
   final ColorScheme cs;
   const _DelayRiskCard({required this.flight, required this.cs});
+
+  @override
+  State<_DelayRiskCard> createState() => _DelayRiskCardState();
+}
+
+class _DelayRiskCardState extends State<_DelayRiskCard> {
+  List<String> _weatherConcerns = const [];
+  InboundAircraftPosition? _inbound;
+
+  Flight get flight => widget.flight;
+  ColorScheme get cs => widget.cs;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSignals();
+  }
+
+  @override
+  void didUpdateWidget(covariant _DelayRiskCard old) {
+    super.didUpdateWidget(old);
+    if (old.flight.aircraftRegistration != flight.aircraftRegistration) {
+      _loadSignals();
+    }
+  }
+
+  /// Observed weather at both airports and, when the tail number is known,
+  /// where the operating aircraft is right now.
+  Future<void> _loadSignals() async {
+    final dep = await AirportDirectory.instance.lookup(
+      flight.departureAirportIata,
+    );
+    final arr = await AirportDirectory.instance.lookup(
+      flight.arrivalAirportIata,
+    );
+    final metars = await WeatherService.instance.metars([
+      ?dep?.icao,
+      ?arr?.icao,
+    ]);
+    final concerns = [for (final m in metars.values) ...m.operationalConcerns];
+
+    InboundAircraftPosition? inbound;
+    final reg = flight.aircraftRegistration;
+    if (reg != null && reg.isNotEmpty && dep != null) {
+      final aircraft = await WorldTrafficService.instance.byRegistration(reg);
+      if (aircraft != null) {
+        inbound = InboundAircraftPosition(
+          airborne: !aircraft.onGround,
+          distanceToDepartureKm: haversineKm(
+            aircraft.lat,
+            aircraft.lon,
+            dep.lat,
+            dep.lon,
+          ),
+        );
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _weatherConcerns = concerns;
+      _inbound = inbound;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -698,7 +785,11 @@ class _DelayRiskCard extends StatelessWidget {
     // measured. DelayRiskCalculator was already written and unit-tested but
     // had no caller; it applies explicit rules and returns the factors behind
     // its verdict, so the card can show its working.
-    final risk = const DelayRiskCalculator().calculate(flight: flight);
+    final risk = const DelayRiskCalculator().calculate(
+      flight: flight,
+      weatherConcerns: _weatherConcerns,
+      inboundPosition: _inbound,
+    );
 
     final riskLevel = risk.level.displayName;
     final riskColor = switch (risk.level) {
@@ -737,7 +828,10 @@ class _DelayRiskCard extends StatelessWidget {
                 ),
                 const Spacer(),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: riskColor.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(8),
@@ -765,7 +859,9 @@ class _DelayRiskCard extends StatelessWidget {
             // than a bare label.
             if (risk.factors.length > 1) ...[
               const SizedBox(height: 10),
-              ...risk.factors.skip(1).map(
+              ...risk.factors
+                  .skip(1)
+                  .map(
                     (factor) => Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Row(
@@ -811,25 +907,14 @@ class _TimelineSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final events = [
-      (
-        'Gate Assigned: ${flight.departureGate ?? "Pending"}',
-        flight.scheduledDeparture.subtract(const Duration(minutes: 60)),
-        Icons.door_front_door_outlined,
-        true,
-      ),
-      (
-        'Boarding Commences',
-        flight.scheduledDeparture.subtract(const Duration(minutes: 35)),
-        Icons.groups_outlined,
-        DateTime.now().isAfter(flight.scheduledDeparture.subtract(const Duration(minutes: 35))) ||
-            flight.status == FlightStatusEnum.active ||
-            flight.status == FlightStatusEnum.landed,
-      ),
+      // "Gate assigned" at T-60 and "Boarding" at T-35 were invented offsets
+      // presented as events. Only times the flight actually carries are shown.
       (
         'Departure (${flight.departureAirportIata})',
         flight.bestDepartureTime,
         Icons.flight_takeoff,
-        flight.status == FlightStatusEnum.active || flight.status == FlightStatusEnum.landed,
+        flight.status == FlightStatusEnum.active ||
+            flight.status == FlightStatusEnum.landed,
       ),
       (
         'Arrival (${flight.arrivalAirportIata})',
@@ -861,13 +946,15 @@ class _TimelineSection extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            ...events.map((e) => _TimelineEvent(
-                  label: e.$1,
-                  time: e.$2,
-                  icon: e.$3,
-                  isCompleted: e.$4,
-                  cs: cs,
-                )),
+            ...events.map(
+              (e) => _TimelineEvent(
+                label: e.$1,
+                time: e.$2,
+                icon: e.$3,
+                isCompleted: e.$4,
+                cs: cs,
+              ),
+            ),
           ],
         ),
       ),
@@ -918,10 +1005,7 @@ class _TimelineEvent extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                color: cs.onSurface,
-              ),
+              style: GoogleFonts.inter(fontSize: 13, color: cs.onSurface),
             ),
           ),
           Text(
@@ -964,7 +1048,11 @@ class _AircraftCard extends StatelessWidget {
                 color: cs.primary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(Icons.airplanemode_active, size: 22, color: cs.primary),
+              child: Icon(
+                Icons.airplanemode_active,
+                size: 22,
+                color: cs.primary,
+              ),
             ),
             const SizedBox(width: 14),
             Column(
@@ -1012,26 +1100,19 @@ class _DataFreshnessBadge extends StatelessWidget {
     final ageText = age.inMinutes < 1
         ? 'Just now'
         : age.inMinutes < 60
-            ? '${age.inMinutes}m ago'
-            : '${age.inHours}h ago';
+        ? '${age.inMinutes}m ago'
+        : '${age.inHours}h ago';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.sensors,
-            size: 14,
-            color: cs.primary,
-          ),
+          Icon(Icons.sensors, size: 14, color: cs.primary),
           const SizedBox(width: 6),
           Text(
             'Live telemetry: $dataSource · Synced $ageText',
-            style: GoogleFonts.inter(
-              fontSize: 11,
-              color: cs.onSurfaceVariant,
-            ),
+            style: GoogleFonts.inter(fontSize: 11, color: cs.onSurfaceVariant),
           ),
         ],
       ),

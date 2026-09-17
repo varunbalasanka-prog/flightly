@@ -56,5 +56,55 @@ void main() {
       expect(risk.level, DelayRiskLevel.high);
       expect(risk.factors.any((f) => f.contains('Inbound')), isTrue);
     });
+    test('observed thunderstorms raise risk and explain why', () {
+      final now = DateTime(2026, 1, 1, 12);
+      final flight = Flight(
+        id: '1', flightNumber: 'BA178', airlineIata: 'BA',
+        departureAirportIata: 'JFK', arrivalAirportIata: 'LHR',
+        scheduledDeparture: now.add(const Duration(hours: 2)),
+        scheduledArrival: now.add(const Duration(hours: 9)),
+      );
+      final risk = const DelayRiskCalculator().calculate(
+        flight: flight,
+        weatherConcerns: const ['Thunderstorms reported at KJFK'],
+        now: now,
+      );
+      expect(risk.level, DelayRiskLevel.medium);
+      expect(risk.factors, contains('Thunderstorms reported at KJFK'));
+    });
+
+    test('an operating aircraft still far away an hour out is high risk', () {
+      final now = DateTime(2026, 1, 1, 12);
+      final flight = Flight(
+        id: '1', flightNumber: 'BA178', airlineIata: 'BA',
+        departureAirportIata: 'JFK', arrivalAirportIata: 'LHR',
+        scheduledDeparture: now.add(const Duration(minutes: 60)),
+        scheduledArrival: now.add(const Duration(hours: 8)),
+      );
+      final risk = const DelayRiskCalculator().calculate(
+        flight: flight,
+        inboundPosition: const InboundAircraftPosition(airborne: true, distanceToDepartureKm: 2400),
+        now: now,
+      );
+      expect(risk.level, DelayRiskLevel.high);
+      expect(risk.factors.first, contains('2400 km away'));
+    });
+
+    test('ignores aircraft position when the schedule is not known', () {
+      final now = DateTime(2026, 1, 1, 12);
+      final flight = Flight(
+        id: '1', flightNumber: 'BA178', airlineIata: 'BA',
+        departureAirportIata: 'JFK', arrivalAirportIata: 'LHR',
+        scheduledDeparture: now.add(const Duration(minutes: 60)),
+        scheduledArrival: now.add(const Duration(hours: 8)),
+        scheduleIsKnown: false,
+      );
+      final risk = const DelayRiskCalculator().calculate(
+        flight: flight,
+        inboundPosition: const InboundAircraftPosition(airborne: true, distanceToDepartureKm: 2400),
+        now: now,
+      );
+      expect(risk.factors.join(' '), isNot(contains('km away')));
+    });
   });
 }

@@ -2,6 +2,10 @@
     <!-- Flutter only injects INTERNET into the debug/profile manifests, so a
          release build had no network access at all. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- "Leave for the airport": approximate location is enough for a drive estimate. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <!-- Voice questions to the flight assistant. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="skypulse"
         android:name="${applicationName}"
@@ -53,6 +57,18 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Android 11+ package visibility: speech recognition and text-to-speech engines. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
+        <!-- Opening news articles and USGS pages in the browser. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https"/>
         </intent>
     </queries>
 </manifest>

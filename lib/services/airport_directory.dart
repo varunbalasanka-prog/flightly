@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// An airport from the bundled OurAirports directory (public domain).
@@ -47,8 +48,13 @@ class AirportDirectory {
 
   Future<void> ensureLoaded() => _loading ??= _load();
 
-  Future<void> _load() async {
-    final raw = await rootBundle.loadString('assets/data/airports.json');
+  Future<void> _load() async => loadFromJson(await rootBundle.loadString('assets/data/airports.json'));
+
+  /// Parses the bundled directory format. Exposed so tests can load the asset
+  /// without going through the platform asset bundle.
+  @visibleForTesting
+  void loadFromJson(String raw) {
+    _loading = Future.value();
     final body = jsonDecode(raw) as Map<String, dynamic>;
     for (final row in body['airports'] as List) {
       final r = row as List;

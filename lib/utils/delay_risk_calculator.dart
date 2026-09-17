@@ -12,6 +12,9 @@ class DelayRiskCalculator {
     required Flight flight,
     FlightStatus? latestStatus,
     Flight? inboundAircraftFlight,
+    List<String> weatherConcerns = const [],
+    InboundAircraftPosition? inboundPosition,
+    DateTime? now,
   }) {
     final factors = <String>[];
     var highestRisk = DelayRiskLevel.unknown;
@@ -72,6 +75,35 @@ class DelayRiskCalculator {
       }
     }
 
+    // ── Rule 6: Observed weather at either airport (METAR) ──
+    for (final concern in weatherConcerns) {
+      final severe = concern.contains('LIFR') || concern.contains('Thunderstorm') || concern.contains('Strong winds');
+      highestRisk = _elevate(highestRisk, severe ? DelayRiskLevel.medium : DelayRiskLevel.low);
+      factors.add(concern);
+    }
+
+    // ── Rule 7: Where the operating aircraft actually is ──
+    // Only meaningful shortly before departure: an aircraft still far away an
+    // hour out cannot make an on-time departure.
+    final position = inboundPosition;
+    if (position != null && flight.scheduleIsKnown) {
+      final minutesToDeparture = flight.scheduledDeparture.difference(now ?? DateTime.now()).inMinutes;
+      if (minutesToDeparture > 0 && minutesToDeparture <= 180) {
+        if (position.airborne && position.distanceToDepartureKm > 0) {
+          // Rough flying time at 780 km/h, plus 35 minutes to land and turn around.
+          final neededMinutes = (position.distanceToDepartureKm / 780 * 60).round() + 35;
+          if (neededMinutes > minutesToDeparture + 45) {
+            highestRisk = _elevate(highestRisk, DelayRiskLevel.high);
+            factors.add('Your aircraft is ${position.distanceToDepartureKm.round()} km away and needs about '
+                '$neededMinutes min to arrive and turn around');
+          } else if (neededMinutes > minutesToDeparture) {
+            highestRisk = _elevate(highestRisk, DelayRiskLevel.medium);
+            factors.add('Your aircraft is still ${position.distanceToDepartureKm.round()} km away — a tight turnaround');
+          }
+        }
+      }
+    }
+
     // ── Rule 5: Flight status alerts ──
     if (flight.status == FlightStatusEnum.cancelled) {
       highestRisk = DelayRiskLevel.high;
@@ -119,4 +151,12 @@ class DelayRiskCalculator {
         ? candidate
         : current;
   }
+}
+
+/// Live position of the aircraft assigned to a flight, relative to that
+/// flight's departure airport.
+class InboundAircraftPosition {
+  final bool airborne;
+  final double distanceToDepartureKm;
+  const InboundAircraftPosition({required this.airborne, required this.distanceToDepartureKm});
 }

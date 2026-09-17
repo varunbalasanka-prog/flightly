@@ -87,8 +87,16 @@ class FlightBloc extends Bloc<FlightEvent, FlightState> {
 
   /// Saves a flight and completes only once the write succeeds, so callers can
   /// report the real outcome instead of assuming it.
-  Future<void> addFlight(Flight flight) async {
-    await _repository.addFlight(flight);
+  Future<Flight> addFlight(Flight flight) async {
+    final saved = await _repository.addFlight(flight);
+    add(FlightLoadRequested());
+    return saved;
+  }
+
+  /// Persists changes to a tracked flight (chosen radio station, tail number,
+  /// schedule times) and completes once the write succeeds.
+  Future<void> updateFlight(Flight flight) async {
+    await _repository.updateFlight(flight);
     add(FlightLoadRequested());
   }
 

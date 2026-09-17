@@ -123,6 +123,42 @@ const ROUTES: Record<string, Route> = {
     },
   },
 
+  // One airframe by its Mode-S hex, for the cockpit view.
+  'adsb-hex': {
+    ttlMs: 4_000,
+    build: (p) => {
+      const hex = str(p.hex, HEX, 'hex', (s) => s.toLowerCase())
+      return `https://api.adsb.lol/v2/hex/${hex}`
+    },
+  },
+
+  // NASA FIRMS active fire detections (VIIRS, last 24h) inside a box.
+  // Requires a free FIRMS map key in the FIRMS_MAP_KEY secret.
+  firms: {
+    ttlMs: 30 * 60_000,
+    build: (p) => {
+      const key = Deno.env.get('FIRMS_MAP_KEY')
+      if (!key) throw new BadRequest('Active fire data is not configured on the server')
+      const s = num(p.south, -90, 90, 'south'), w = num(p.west, -180, 180, 'west')
+      const n = num(p.north, -90, 90, 'north'), e = num(p.east, -180, 180, 'east')
+      if (n <= s || e <= w) throw new BadRequest('bbox is inverted')
+      return `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${encodeURIComponent(key)}/VIIRS_SNPP_NRT/${w.toFixed(3)},${s.toFixed(3)},${e.toFixed(3)},${n.toFixed(3)}/1`
+    },
+    transform: (csv) => {
+      const [header, ...lines] = csv.trim().split(/\r?\n/)
+      const cols = header.split(',')
+      const at = (name: string) => cols.indexOf(name)
+      const iLat = at('latitude'), iLon = at('longitude'), iFrp = at('frp'), iConf = at('confidence'), iDate = at('acq_date'), iTime = at('acq_time')
+      if (iLat < 0 || iLon < 0) throw new Error('unexpected FIRMS format')
+      return {
+        fires: lines.slice(0, 5000).map((line) => {
+          const c = line.split(',')
+          return [Number(c[iLat]), Number(c[iLon]), Number(c[iFrp] ?? 0), c[iConf] ?? '', `${c[iDate]}T${String(c[iTime]).padStart(4, '0')}`]
+        }),
+      }
+    },
+  },
+
   // Look an airframe up by tail number, for "where's my plane".
   'adsb-reg': {
     ttlMs: 15_000,

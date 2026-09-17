@@ -1,10 +1,25 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../../models/models.dart';
-import '../../providers/flight_data_provider.dart';
-import '../../services/aviation_data_service.dart';
+import 'package:intl/intl.dart';
+import 'package:timeago/timeago.dart' as timeago;
 
-/// Airport status screen — weather, delay indices, lounge info, gate guides.
+import '../../services/airport_directory.dart';
+import '../../services/cctv_service.dart';
+import '../../services/radio_service.dart';
+import '../../services/weather_service.dart';
+import '../../services/world_traffic_service.dart';
+import '../widgets/live_camera_view.dart';
+import '../widgets/radio_bar.dart';
+
+/// Live picture of one airport from public data.
+///
+/// This screen used to show invented numbers: a fixed 22°C, "42 active
+/// flights", a delay index from a static table, and three lounges generated
+/// for any airport code (one of them a real Amex brand at a made-up gate).
+/// Everything here now comes from an observation or a live feed, with its
+/// source named.
 class AirportStatusScreen extends StatefulWidget {
   final String iataCode;
   const AirportStatusScreen({super.key, required this.iataCode});
@@ -14,455 +29,257 @@ class AirportStatusScreen extends StatefulWidget {
 }
 
 class _AirportStatusScreenState extends State<AirportStatusScreen> {
-  late String _currentIata;
-  AirportInfo? _airportInfo;
-  bool _loading = true;
+  AirportInfoRecord? _airport;
+  bool _resolved = false;
+  Metar? _metar;
+  LocalWeather? _weather;
+  List<TrafficAircraft> _arriving = const [];
+  List<TrafficAircraft> _departing = const [];
+  int _onGround = 0;
+  DateTime? _trafficAt;
+  List<CameraMatch> _cameras = const [];
+  List<RadioStation> _radio = const [];
+  Timer? _timer;
 
   @override
   void initState() {
     super.initState();
-    _currentIata = widget.iataCode.toUpperCase();
-    _loadAirport();
+    _load();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _loadTraffic());
   }
 
-  Future<void> _loadAirport() async {
-    setState(() => _loading = true);
-    final info = await AviationDataService.instance.getAirport(_currentIata);
-    if (mounted) {
-      setState(() {
-        _airportInfo = info;
-        _loading = false;
-      });
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final airport = await AirportDirectory.instance.lookup(widget.iataCode);
+    if (!mounted) return;
+    setState(() {
+      _airport = airport;
+      _resolved = true;
+    });
+    if (airport == null) return;
+
+    await Future.wait([
+      WeatherService.instance.metar(airport.icao).then((v) => _metar = v),
+      WeatherService.instance.local(airport.lat, airport.lon).then((v) => _weather = v),
+      CctvService.instance.nearest(airport.lat, airport.lon, radiusKm: 40, limit: 4).then((v) => _cameras = v),
+      RadioService.instance.near(airport.lat, airport.lon, radiusKm: 60, limit: 8).then((v) => _radio = v),
+      _loadTraffic(),
+    ]);
+    if (mounted) setState(() {});
+  }
+
+  /// Traffic within 30 nm, split by what each aircraft is actually doing:
+  /// low and descending toward the field, or low and climbing away from it.
+  Future<void> _loadTraffic() async {
+    final a = _airport;
+    if (a == null) return;
+    final snapshot = await WorldTrafficService.instance.regional(a.lat, a.lon, radiusNm: 30);
+    if (snapshot == null || !mounted) return;
+
+    final arriving = <TrafficAircraft>[];
+    final departing = <TrafficAircraft>[];
+    var ground = 0;
+    for (final ac in snapshot.aircraft) {
+      if (ac.onGround) {
+        ground++;
+        continue;
+      }
+      final alt = ac.altitudeFt ?? 99999;
+      final vs = ac.verticalRateFpm ?? 0;
+      if (alt < 12000 && vs < -300) arriving.add(ac);
+      if (alt < 12000 && vs > 300) departing.add(ac);
     }
-  }
-
-  void _showSearchDialog() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Search Airport'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: controller,
-              textCapitalization: TextCapitalization.characters,
-              decoration: const InputDecoration(
-                hintText: 'e.g. JFK, LHR, DXB, DEL',
-                prefixIcon: Icon(Icons.search),
-              ),
-              autofocus: true,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Popular Hubs:',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              children: ['JFK', 'LHR', 'DXB', 'LAX', 'DEL', 'BOM', 'SIN', 'FRA'].map((hub) {
-                return ActionChip(
-                  label: Text(hub),
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    setState(() {
-                      _currentIata = hub;
-                    });
-                    _loadAirport();
-                  },
-                );
-              }).toList(),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final val = controller.text.trim().toUpperCase();
-              if (val.isNotEmpty) {
-                Navigator.pop(ctx);
-                setState(() {
-                  _currentIata = val;
-                });
-                _loadAirport();
-              }
-            },
-            child: const Text('Search'),
-          ),
-        ],
-      ),
-    );
+    int byAltitude(TrafficAircraft x, TrafficAircraft y) => (x.altitudeFt ?? 0).compareTo(y.altitudeFt ?? 0);
+    arriving.sort(byAltitude);
+    departing.sort(byAltitude);
+    setState(() {
+      _arriving = arriving;
+      _departing = departing;
+      _onGround = ground;
+      _trafficAt = snapshot.fetchedAt;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final status = _airportInfo?.airport;
+    final a = _airport;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('$_currentIata Hub Monitor'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search),
-            tooltip: 'Search Airport',
-            onPressed: _showSearchDialog,
-          ),
-        ],
-      ),
-      body: _loading
+      appBar: AppBar(title: Text(a?.name ?? widget.iataCode)),
+      bottomNavigationBar: const Padding(padding: EdgeInsets.all(8), child: RadioBar()),
+      body: !_resolved
           ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadAirport,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  // ── Airport Header ──
-                  _AirportHeader(
-                    iataCode: _currentIata,
-                    status: status,
-                    cs: cs,
-                  ),
-                  const SizedBox(height: 16),
-
-                  // ── Live Weather & Delay Indicators ──
-                  _OperationsIndicatorCard(status: status, cs: cs),
-                  const SizedBox(height: 24),
-
-                  // ── Lounges Section ──
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          : a == null
+              ? Center(child: Text('No airport with code ${widget.iataCode}.', style: TextStyle(color: cs.onSurfaceVariant)))
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView(
+                    padding: const EdgeInsets.only(bottom: 24),
                     children: [
-                      Text(
-                        'AIRPORT LOUNGES',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: cs.onSurfaceVariant,
-                          letterSpacing: 1.5,
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: Text(
+                          '${a.iata} · ${a.icao} · ${a.displayCity}, ${a.countryCode}',
+                          style: TextStyle(color: cs.onSurfaceVariant),
                         ),
                       ),
-                      Text(
-                        'Verified Amenities',
-                        style: TextStyle(fontSize: 12, color: cs.primary),
+                      _card(
+                        'Conditions',
+                        Icons.cloud_outlined,
+                        _metar == null && _weather == null
+                            ? const Text('Weather unavailable right now.')
+                            : Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (_weather != null)
+                                    Text(
+                                      '${_weather!.temperatureC.round()}° · ${_weather!.description}',
+                                      style: GoogleFonts.inter(fontSize: 22, fontWeight: FontWeight.w700),
+                                    ),
+                                  if (_metar != null) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      [
+                                        if (_metar!.flightCategory != null) _metar!.flightCategory!,
+                                        if (_metar!.windKt != null)
+                                          'wind ${_metar!.windDirDeg ?? 'VRB'}° ${_metar!.windKt}kt'
+                                              '${_metar!.gustKt != null ? ' gusting ${_metar!.gustKt}' : ''}',
+                                        if (_metar!.visibilitySm != null) 'visibility ${_metar!.visibilitySm} sm',
+                                        if (_metar!.ceilingFt != null) 'ceiling ${_metar!.ceilingFt} ft',
+                                      ].join(' · '),
+                                    ),
+                                    for (final c in _metar!.operationalConcerns)
+                                      Text(c, style: TextStyle(color: cs.error, fontSize: 13)),
+                                    const SizedBox(height: 4),
+                                    SelectableText(_metar!.raw, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                                    Text(
+                                      'METAR ${_metar!.observed != null ? timeago.format(_metar!.observed!) : ''}',
+                                      style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                      ),
+                      _card(
+                        'Live traffic within 30 nm',
+                        Icons.flight,
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${_arriving.length} descending toward the area · ${_departing.length} climbing out · '
+                              '$_onGround on the ground',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                            if (_trafficAt != null)
+                              Text('adsb.lol · ${DateFormat.Hms().format(_trafficAt!)}',
+                                  style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant)),
+                            const SizedBox(height: 8),
+                            _trafficList('Arriving', _arriving, Icons.flight_land, cs),
+                            _trafficList('Departing', _departing, Icons.flight_takeoff, cs),
+                            Text(
+                              "Based on altitude and climb/descent — it's what's flying now, not a timetable.",
+                              style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                            ),
+                          ],
+                        ),
+                      ),
+                      _card(
+                        'Cameras nearby',
+                        Icons.videocam_outlined,
+                        _cameras.isEmpty
+                            ? Text('No public cameras are published near ${a.displayCity}.',
+                                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13))
+                            : SizedBox(
+                                height: 200,
+                                child: ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: _cameras.length,
+                                  separatorBuilder: (_, _) => const SizedBox(width: 10),
+                                  itemBuilder: (context, i) => SizedBox(
+                                    width: 260,
+                                    child: LiveCameraView(camera: _cameras[i].camera, distanceKm: _cameras[i].distanceKm),
+                                  ),
+                                ),
+                              ),
+                      ),
+                      _card(
+                        'Local radio',
+                        Icons.radio,
+                        _radio.isEmpty
+                            ? Text('No stations listed nearby.', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13))
+                            : Column(
+                                children: [
+                                  for (final r in _radio)
+                                    ListTile(
+                                      dense: true,
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: const Icon(Icons.play_circle_outline),
+                                      title: Text(r.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                      subtitle: Text(r.tags.take(3).join(', '), maxLines: 1),
+                                      onTap: () => RadioPlayer.instance.play(r),
+                                    ),
+                                ],
+                              ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  ..._getLoungesForAirport(_currentIata).map(
-                    (lounge) => _LoungeCard(
-                      name: lounge.name,
-                      terminal: lounge.terminal,
-                      isOpen: lounge.isOpen,
-                      amenities: lounge.amenities,
-                      cs: cs,
-                    ),
-                  ),
-
-                  const SizedBox(height: 32),
-                ],
-              ),
-            ),
-    );
-  }
-
-  List<_LoungeItem> _getLoungesForAirport(String iata) {
-    return [
-      _LoungeItem(
-        name: '$iata Signature Club',
-        terminal: 'Terminal 1 · Concourse A',
-        isOpen: true,
-        amenities: const ['High-Speed WiFi', 'Hot Buffet', 'Premium Bar', 'Shower Suites'],
-      ),
-      _LoungeItem(
-        name: 'The Centurion Lounge',
-        terminal: 'Terminal 2 · Gate 24',
-        isOpen: true,
-        amenities: const ['WiFi', 'Fine Dining', 'Cocktail Lounge', 'Spa'],
-      ),
-      _LoungeItem(
-        name: 'SkyTeam & Star Alliance Lounge',
-        terminal: 'International Terminal · Gate 40',
-        isOpen: false,
-        amenities: const ['WiFi', 'Quiet Pods', 'Snacks'],
-      ),
-    ];
-  }
-}
-
-class _LoungeItem {
-  final String name;
-  final String terminal;
-  final bool isOpen;
-  final List<String> amenities;
-
-  const _LoungeItem({
-    required this.name,
-    required this.terminal,
-    required this.isOpen,
-    required this.amenities,
-  });
-}
-
-class _AirportHeader extends StatelessWidget {
-  final String iataCode;
-  final AirportStatus? status;
-  final ColorScheme cs;
-
-  const _AirportHeader({
-    required this.iataCode,
-    required this.status,
-    required this.cs,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final fullName = status?.name ?? '$iataCode International Airport';
-    final location = status != null ? '${status!.city}, ${status!.country}' : 'Global Hub';
-
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainer,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.3)),
-      ),
-      child: Column(
-        children: [
-          Text(
-            iataCode,
-            style: GoogleFonts.inter(
-              fontSize: 48,
-              fontWeight: FontWeight.w800,
-              color: cs.primary,
-              letterSpacing: 2,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            fullName,
-            style: GoogleFonts.inter(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: cs.onSurface,
-            ),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 4),
-          Text(
-            location,
-            style: GoogleFonts.inter(
-              fontSize: 13,
-              color: cs.onSurfaceVariant,
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _OperationsIndicatorCard extends StatelessWidget {
-  final AirportStatus? status;
-  final ColorScheme cs;
-
-  const _OperationsIndicatorCard({
-    required this.status,
-    required this.cs,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final delay = status?.delayMinutes ?? 5;
-    final weather = status?.weatherCondition ?? 'Clear';
-    final temp = status?.temperatureC ?? 22;
-
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.3)),
-      ),
-      color: cs.surfaceContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'AIRPORT FLOW',
-                    style: GoogleFonts.inter(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: cs.onSurfaceVariant,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    delay > 20 ? 'Moderate Delays' : 'Normal Operations',
-                    style: GoogleFonts.inter(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: delay > 20 ? Colors.amber : Colors.green,
-                    ),
-                  ),
-                  Text(
-                    'Avg ground delay: ~$delay min',
-                    style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              width: 1,
-              height: 40,
-              color: cs.outlineVariant.withValues(alpha: 0.3),
-            ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.only(left: 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'METAR WEATHER',
-                      style: GoogleFonts.inter(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: cs.onSurfaceVariant,
-                        letterSpacing: 1,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '$weather · $temp°C',
-                      style: GoogleFonts.inter(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: cs.onSurface,
-                      ),
-                    ),
-                    Text(
-                      'Wind calm · 10mi visibility',
-                      style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                    ),
-                  ],
                 ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
-}
 
-class _LoungeCard extends StatelessWidget {
-  final String name;
-  final String terminal;
-  final bool isOpen;
-  final List<String> amenities;
-  final ColorScheme cs;
-
-  const _LoungeCard({
-    required this.name,
-    required this.terminal,
-    required this.isOpen,
-    required this.amenities,
-    required this.cs,
-  });
-
-  IconData _amenityIcon(String amenity) {
-    if (amenity.contains('WiFi')) return Icons.wifi;
-    if (amenity.contains('Buffet') || amenity.contains('Food') || amenity.contains('Dining')) return Icons.restaurant;
-    if (amenity.contains('Bar') || amenity.contains('Cocktail')) return Icons.local_bar;
-    if (amenity.contains('Shower')) return Icons.shower;
-    if (amenity.contains('Spa')) return Icons.spa;
-    return Icons.check_circle_outline;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: cs.outlineVariant.withValues(alpha: 0.3)),
-      ),
-      color: cs.surfaceContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+  Widget _trafficList(String label, List<TrafficAircraft> list, IconData icon, ColorScheme cs) {
+    if (list.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label.toUpperCase(), style: TextStyle(fontSize: 10, letterSpacing: 1.2, color: cs.onSurfaceVariant)),
+          for (final ac in list.take(6))
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                Icon(icon, size: 14, color: cs.secondary),
+                const SizedBox(width: 6),
+                SizedBox(width: 90, child: Text(ac.label, style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13))),
                 Expanded(
                   child: Text(
-                    name,
-                    style: GoogleFonts.inter(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: cs.onSurface,
-                    ),
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: isOpen
-                        ? Colors.green.withValues(alpha: 0.15)
-                        : Colors.redAccent.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    isOpen ? 'OPEN' : 'CLOSED',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: isOpen ? Colors.green : Colors.redAccent,
-                    ),
+                    [
+                      ac.typeCode,
+                      if (ac.altitudeFt != null) '${NumberFormat.decimalPattern().format(ac.altitudeFt!.round())} ft',
+                    ].whereType<String>().join(' · '),
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 4),
-            Text(
-              terminal,
-              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 12,
-              runSpacing: 6,
-              children: amenities.map((a) {
-                return Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(_amenityIcon(a), size: 14, color: cs.primary),
-                    const SizedBox(width: 4),
-                    Text(
-                      a,
-                      style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                    ),
-                  ],
-                );
-              }).toList(),
-            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _card(String title, IconData icon, Widget child) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(icon, size: 18, color: cs.secondary),
+              const SizedBox(width: 8),
+              Text(title, style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w700)),
+            ]),
+            const SizedBox(height: 10),
+            child,
           ],
         ),
       ),

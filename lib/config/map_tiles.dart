@@ -44,6 +44,25 @@ class MapTiles {
     );
   }
 
+  /// Esri World Imagery: keyless satellite basemap (attribution required).
+  static TileLayer satelliteLayer() {
+    return TileLayer(
+      urlTemplate:
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      userAgentPackageName: userAgentPackageName,
+      maxNativeZoom: 19,
+    );
+  }
+
+  static Widget satelliteAttribution() {
+    return const RichAttributionWidget(
+      attributions: [
+        TextSourceAttribution('Esri, Maxar, Earthstar Geographics'),
+        TextSourceAttribution('OpenStreetMap contributors'),
+      ],
+    );
+  }
+
   /// A ready-made tile layer for the current theme.
   static TileLayer layer({required bool isDark}) {
     return TileLayer(

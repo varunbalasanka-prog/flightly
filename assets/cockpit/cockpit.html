@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>SkyPulse Cockpit</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" />
+  <script src="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Cesium.js"></script>
+  <style>
+    html, body, #globe { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #05070b; }
+    .hud { position: absolute; left: 12px; right: 12px; top: 12px; display: flex; gap: 8px; flex-wrap: wrap;
+           font: 600 12px/1.3 system-ui, sans-serif; color: #e5f6ff; pointer-events: none; }
+    .chip { background: rgba(5, 10, 16, .72); border: 1px solid rgba(125, 211, 252, .35); border-radius: 8px; padding: 6px 10px; }
+    .chip small { display: block; font-weight: 500; font-size: 9px; letter-spacing: .12em; color: #7dd3fc; }
+    #status { position: absolute; left: 12px; bottom: 12px; font: 500 11px system-ui, sans-serif; color: #cbd5e1;
+              background: rgba(5, 10, 16, .72); padding: 6px 10px; border-radius: 8px; max-width: 80%; }
+    .cesium-viewer-bottom { opacity: .7; }
+  </style>
+</head>
+<body>
+  <div id="globe"></div>
+  <div class="hud">
+    <div class="chip"><small>FLIGHT</small><span id="callsign">—</span></div>
+    <div class="chip"><small>ALTITUDE</small><span id="alt">—</span></div>
+    <div class="chip"><small>SPEED</small><span id="spd">—</span></div>
+    <div class="chip"><small>HEADING</small><span id="hdg">—</span></div>
+  </div>
+  <div id="status">Waiting for the aircraft's position…</div>
+
+<script>
+/*
+ * Cockpit view: the camera rides a live aircraft using its broadcast ADS-B
+ * position, altitude and track. Between fixes (every few seconds) the camera
+ * dead-reckons along the track so the flight is smooth; each new fix corrects
+ * it. Imagery is Esri World Imagery (keyless). 3D terrain and buildings need a
+ * Cesium ion token; without one the globe is a smooth ellipsoid, and the
+ * status line says so.
+ *
+ * The host app sends updates with postMessage (web) or skypulseUpdate()
+ * (mobile web view):
+ *   { type: 'config', ionToken }
+ *   { type: 'fix', callsign, lat, lon, altFt, speedKt, trackDeg, onGround, at }
+ */
+const state = { fix: null, receivedAt: 0, viewer: null, terrain: false };
+
+function status(text) { document.getElementById('status').textContent = text; }
+
+async function start(ionToken) {
+  if (state.viewer) return;
+  const options = {
+    baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      maximumLevel: 19,
+      credit: 'Esri, Maxar, Earthstar Geographics',
+    })),
+    baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
+    navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false,
+    infoBox: false, selectionIndicator: false,
+  };
+  if (ionToken) {
+    Cesium.Ion.defaultAccessToken = ionToken;
+    options.terrain = Cesium.Terrain.fromWorldTerrain();
+    state.terrain = true;
+  }
+  const viewer = new Cesium.Viewer('globe', options);
+  viewer.scene.globe.enableLighting = true;
+  viewer.scene.skyAtmosphere.show = true;
+  viewer.scene.fog.enabled = true;
+  viewer.scene.screenSpaceCameraController.enableInputs = false;
+  if (ionToken) {
+    try { viewer.scene.primitives.add(await Cesium.createOsmBuildingsAsync()); } catch (_) {}
+  }
+  state.viewer = viewer;
+  viewer.scene.preRender.addEventListener(tick);
+}
+
+function onFix(fix) {
+  state.fix = fix;
+  state.receivedAt = performance.now();
+  document.getElementById('callsign').textContent = fix.callsign || '—';
+  document.getElementById('alt').textContent = fix.onGround ? 'Ground' : (fix.altFt != null ? Math.round(fix.altFt).toLocaleString() + ' ft' : '—');
+  document.getElementById('spd').textContent = fix.speedKt != null ? Math.round(fix.speedKt) + ' kt' : '—';
+  document.getElementById('hdg').textContent = fix.trackDeg != null ? Math.round(fix.trackDeg) + '°' : '—';
+  status((fix.onGround ? 'On the ground · ' : 'Live ADS-B · ') +
+    (state.terrain ? '3D terrain' : 'No 3D terrain (add a Cesium ion token for terrain & buildings)'));
+}
+
+// Advance along the track for up to 30 s after the last fix.
+function predicted() {
+  const f = state.fix;
+  if (!f) return null;
+  const dt = Math.min(30, (performance.now() - state.receivedAt) / 1000);
+  if (!f.speedKt || f.onGround || f.trackDeg == null) return { lat: f.lat, lon: f.lon };
+  const d = (f.speedKt * 0.514444 * dt) / 6371000;
+  const b = f.trackDeg * Math.PI / 180, p1 = f.lat * Math.PI / 180, l1 = f.lon * Math.PI / 180;
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return { lat: p2 * 180 / Math.PI, lon: l2 * 180 / Math.PI };
+}
+
+function tick() {
+  const f = state.fix, v = state.viewer;
+  if (!f || !v) return;
+  const p = predicted();
+  // Barometric feet to metres, with a small floor so ground views stay above the surface.
+  const altM = Math.max(f.onGround ? 3 : 30, (f.altFt || 0) * 0.3048);
+  v.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(p.lon, p.lat, altM),
+    orientation: {
+      heading: Cesium.Math.toRadians(f.trackDeg || 0),
+      pitch: Cesium.Math.toRadians(f.onGround ? -2 : -7),
+      roll: 0,
+    },
+  });
+}
+
+function handle(message) {
+  let data = message;
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { return; } }
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'config') start(data.ionToken || '');
+  if (data.type === 'fix' && Number.isFinite(data.lat) && Number.isFinite(data.lon)) {
+    if (!state.viewer) start('');
+    onFix(data);
+  }
+  if (data.type === 'lost') status('No live position right now. The aircraft may be on the ground or out of coverage.');
+}
+
+window.skypulseUpdate = handle;
+window.addEventListener('message', (e) => handle(e.data));
+</script>
+</body>
+</html>

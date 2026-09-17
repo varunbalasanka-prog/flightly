@@ -19,6 +19,14 @@ class AppConfig {
   /// every tile is watermarked. Leave unset to use keyless OpenStreetMap tiles.
   static String get cartoApiKey => dotenv.env['CARTO_API_KEY'] ?? '';
 
+  /// Optional. A free Cesium ion token adds 3D terrain and buildings to the
+  /// cockpit view; without it the globe is imagery on a smooth ellipsoid.
+  static String get cesiumIonToken => dotenv.env['CESIUM_ION_TOKEN'] ?? '';
+
+  /// Where the web build is hosted, used to build shareable live-flight links
+  /// from native apps. On web the current origin is used instead.
+  static String get publicWebUrl => dotenv.env['PUBLIC_WEB_URL'] ?? '';
+
   /// Aviationstack credentials are NEVER stored in the app.
   /// They live exclusively in Supabase Vault secrets.
   /// The app only calls authenticated Edge Functions.

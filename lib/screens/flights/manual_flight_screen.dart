@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../../blocs/flight/flight_bloc.dart';
 import '../../models/models.dart';
+import 'add_flight_flow.dart';
 
 /// Manual flight entry — no API call consumed.
 class ManualFlightScreen extends StatefulWidget {
@@ -248,16 +247,11 @@ class _ManualFlightScreenState extends State<ManualFlightScreen> {
         lastUpdated: DateTime.now(),
       );
 
-      context.read<FlightBloc>().add(FlightAddRequested(flight));
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$flightNumber saved to your tracked flights!'),
-          backgroundColor: Theme.of(context).colorScheme.primary,
-        ),
-      );
-
-      Navigator.of(context).pop();
+      // Previously this fired the event and immediately reported success.
+      final navigator = Navigator.of(context);
+      completeAddFlight(context, flight).then((saved) {
+        if (saved != null && mounted) navigator.pop();
+      });
     }
   }
 }

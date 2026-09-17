@@ -78,3 +78,5 @@ flutter:
   assets:
     - .env
     - assets/
+    - assets/data/
+    - assets/cockpit/
